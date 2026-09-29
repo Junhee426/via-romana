@@ -42,8 +42,11 @@
   L.control.zoom({ position: "bottomright" }).addTo(map);
   const renderer = L.canvas({ padding: 0.5, tolerance: 8 });
 
+  // CARTO는 키 없이 요청하면 타일에 "API key required" 워터마크가 찍힌다.
+  // 서버에 CARTO_API_KEY가 있으면 /api/meta를 받은 뒤 키를 붙여서 띄운다
+  const CARTO_URL = "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png";
   const bases = {
-    map: L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
+    map: L.tileLayer(CARTO_URL, {
       maxZoom: 19,
       subdomains: "abcd",
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
@@ -54,7 +57,6 @@
     }),
   };
   let baseKey = "map";
-  bases.map.addTo(map);
   map.attributionControl.addAttribution('유적: <a href="https://pleiades.stoa.org">Pleiades</a>');
 
   function showBase(key) {
@@ -512,10 +514,14 @@
   // ── 시작 ────────────────────────────────────
   async function init() {
     try {
-      const [meta, sites] = await Promise.all([
-        fetch("/api/meta").then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); }),
-        fetch("/api/sites").then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); }),
-      ]);
+      const getOk = (url) => fetch(url).then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); });
+      const sitesReq = getOk("/api/sites");
+      sitesReq.catch(() => {});   // 실패는 아래 await에서 처리
+      const meta = await getOk("/api/meta");
+      // 배경 지도는 키 여부를 안 뒤에 띄워서 워터마크 타일을 먼저 받지 않게 한다
+      if (meta.carto_key) bases.map.setUrl(`${CARTO_URL}?key=${encodeURIComponent(meta.carto_key)}`, true);
+      showBase(baseKey);
+      const sites = await sitesReq;
       state.meta = meta;
       state.catByKey = Object.fromEntries(meta.categories.map((c) => [c.key, c]));
       state.active = new Set(meta.categories.map((c) => c.key));
@@ -527,6 +533,7 @@
       bindMarchButtons();
       render();
     } catch {
+      if (!map.hasLayer(bases[baseKey])) showBase(baseKey);
       $("count-line").textContent = "유적 데이터를 불러오지 못했어요. 새로고침해 주세요.";
     }
   }

@@ -65,6 +65,15 @@ python scripts/build_sites.py --refresh  # 원본을 새로 받아서 다시 가
 2. `render.yaml`이 자동으로 읽힘 → **Apply**
 3. 이후 `main` 브랜치에 푸시할 때마다 자동 배포
 
+### CARTO 지도 키 (기본 배경 지도)
+
+CARTO 지도는 키 없이 쓰면 타일에 "API key required" 워터마크가 찍힌다. 비상업적 사용은 월 500만 타일 요청, 상업적 사용은 월 100만 요청까지 무료다.
+
+1. <https://carto.com/basemaps/apikey/> 에서 키를 발급 (약관: <https://carto.com/legal/basemap-terms/>)
+2. Render 대시보드 → 서비스 → Environment → `CARTO_API_KEY`에 키 입력 → 저장(자동 재배포)
+
+로컬에서는 `CARTO_API_KEY=키 uvicorn app.main:app --reload`로 실행한다. 이 키도 브라우저에 그대로 전달된다.
+
 ### Google 지도 연결
 
 - **링크(설정 필요 없음)**: 유적 팝업의 "구글맵에서 보기"와 "길찾기"는 키 없이 Google 지도 앱·웹으로 연결된다.

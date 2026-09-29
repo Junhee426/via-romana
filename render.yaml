@@ -12,6 +12,9 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.12.7"
+      # CARTO 기본 지도 키. 없으면 지도에 워터마크가 찍힌다. 값은 Render 대시보드에서 입력
+      - key: CARTO_API_KEY
+        sync: false
       # 선택: 있으면 배경 지도를 Google 지도로 쓴다. 값은 Render 대시보드에서 입력
       - key: GOOGLE_MAPS_API_KEY
         sync: false

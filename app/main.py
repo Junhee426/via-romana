@@ -31,6 +31,9 @@ KML_MAX = 2000
 # 노출되는 키이므로 Google Cloud 콘솔에서 사이트 주소(리퍼러)로 제한해 둔다.
 GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY", "").strip()
 
+# CARTO 기본 지도 키. 없으면 타일에 "API key required" 워터마크가 찍힌다
+CARTO_API_KEY = os.environ.get("CARTO_API_KEY", "").strip()
+
 app = FastAPI(title="via-romana", version="0.1.0")
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
@@ -143,6 +146,7 @@ def meta():
         "roman_mile_km": ROMAN_MILE_KM,
         "kml_max": KML_MAX,
         "google_maps_key": GOOGLE_MAPS_API_KEY or None,
+        "carto_key": CARTO_API_KEY or None,
         "categories": [
             {"key": c["key"], "label": c["label"], "color": c["color"],
              "count": counts.get(c["key"], 0)}
