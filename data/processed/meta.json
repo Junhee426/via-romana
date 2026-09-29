@@ -1,5 +1,5 @@
 {
-  "built_at": "2026-09-29T19:59:42+00:00",
+  "built_at": "2026-09-29T23:04:58+00:00",
   "total": 10580,
   "by_category": {
     "arena": 374,
@@ -16,11 +16,17 @@
     -30,
     400
   ],
+  "with_wikidata": 4099,
   "sources": [
     {
       "name": "Pleiades",
       "url": "https://pleiades.stoa.org",
       "license": "CC BY 3.0"
+    },
+    {
+      "name": "Wikidata",
+      "url": "https://www.wikidata.org",
+      "license": "CC0"
     }
   ]
 }

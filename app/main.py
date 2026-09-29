@@ -35,6 +35,15 @@ app = FastAPI(title="via-romana", version="0.1.0")
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 
+@app.middleware("http")
+async def revalidate_static(request, call_next):
+    """지도 파일(html·js·css)은 매번 새 버전인지 확인하게 해서 배포 직후 옛 화면이 남지 않게 한다."""
+    response = await call_next(request)
+    if not request.url.path.startswith("/api/"):
+        response.headers.setdefault("Cache-Control", "no-cache")
+    return response
+
+
 def load_sites():
     path = DATA / "sites.geojson"
     if not path.exists():

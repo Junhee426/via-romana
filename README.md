@@ -9,6 +9,7 @@
 - **하루 행군**: 출발점을 고르면 로마 군단 하루 행군 거리(20 로마마일 ≈ 29.6km) 안의 유적을 가까운 순으로
 - 지도·위성 배경 전환 (Google 지도 키가 있으면 Google 지도), 유적별 Pleiades·구글맵 링크와 길찾기
 - 화면 또는 행군 반경의 유적을 KML로 받아 Google 내 지도로 가져가기
+- 유적 사진·설명: Wikidata와 연결된 유적(약 4,100곳)은 팝업에 위키미디어 공용 사진과 위키백과 요약(한국어 우선, 없으면 영어)을 띄운다
 
 ## 구조
 
@@ -87,6 +88,7 @@ python scripts/build_sites.py --refresh  # 원본을 새로 받아서 다시 가
   - Pleiades에서 위치 정밀도가 `precise`인 장소
   - 존속 기간이 기원전 30년 이후 ~ 서기 400년 이전과 겹치는 곳 (원형극장·수도교·목욕탕·빌라는 연대가 없어도 포함)
   - `scripts/build_sites.py`의 대략적인 유럽 경계 다각형 안 (북아프리카·아나톨리아 제외, 에게해 동쪽 일부 섬도 빠짐)
+- Wikidata 연결은 Pleiades가 관리하는 연결표(`data/indexes/wikidata.json`)에서 가져와 `wd` 속성에 넣는다. 사진·설명 자체는 저장하지 않고, 팝업을 열 때 브라우저가 Wikidata·위키백과·위키미디어 공용 API에서 바로 불러온다 (키 필요 없음). 사진마다 저작자·라이선스를 함께 표시한다
 - "유적이 남아 있음"은 Pleiades의 `archaeological_remains`가 substantive·traces·restored인 곳
 
 ## 다음 단계

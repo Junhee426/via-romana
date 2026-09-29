@@ -303,16 +303,48 @@ body.picking #map { cursor: crosshair; }
   box-shadow: 0 10px 28px rgba(38, 40, 44, 0.22);
 }
 .leaflet-popup-tip { background: var(--marble); }
+.leaflet-container a.leaflet-popup-close-button {
+  top: 6px;
+  right: 6px;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--marble);
+  color: var(--basalt);
+  font: 20px/26px var(--font-ui);
+  z-index: 1;
+}
 .leaflet-popup-content { margin: 14px 16px; width: min(280px, 70vw) !important; }
 
-.pop-name { margin: 0 0 4px; font-size: 16px; font-weight: 600; line-height: 1.35; }
+/* 사진은 팝업 위쪽 끝까지 채운다 */
+.pop-photo { margin: -14px -16px 12px; border-radius: 12px 12px 0 0; overflow: hidden; background: var(--marble-deep); }
+.pop-photo img { display: block; width: 100%; height: 160px; object-fit: cover; }
+.pop-photo figcaption { padding: 3px 10px; font-size: 11px; line-height: 1.4; color: var(--tufa); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pop-photo figcaption a { color: inherit; text-decoration: none; }
+.pop-loading { height: 160px; animation: pop-pulse 1.2s ease-in-out infinite alternate; }
+@keyframes pop-pulse { from { opacity: 1; } to { opacity: 0.55; } }
+@media (prefers-reduced-motion: reduce) { .pop-loading { animation: none; } }
+.leaflet-popup-content .pop-label { margin: -2px 0 4px; font-size: 13.5px; color: var(--tufa); }
+.leaflet-popup-content .pop-about {
+  margin: 0 0 4px;
+  font-size: 13px;
+  line-height: 1.6;
+  display: -webkit-box;
+  -webkit-line-clamp: 7;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.leaflet-popup-content .pop-source { margin: 0 0 10px; font-size: 12.5px; }
+.pop-source a { color: var(--caeruleum); }
+/* Leaflet 기본 문단 여백(.leaflet-popup-content p)보다 우선하도록 범위를 좁힌다 */
+.leaflet-popup-content .pop-name { margin: 0 0 4px; font-size: 16px; font-weight: 600; line-height: 1.35; }
 .pop-cat { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--tufa); }
 .pop-cat .swatch { width: 9px; height: 9px; border-radius: 50%; background: var(--c); }
 .pop-facts { margin: 10px 0; padding: 0; display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; font-size: 13px; }
 .pop-facts dt { color: var(--tufa); }
 .pop-facts dd { margin: 0; }
-.pop-desc { margin: 0 0 10px; font-size: 12.5px; color: var(--tufa); line-height: 1.55; }
-.pop-links { display: flex; gap: 14px; font-size: 13px; }
+.leaflet-popup-content .pop-desc { margin: 0 0 10px; font-size: 12.5px; color: var(--tufa); line-height: 1.55; }
+.pop-links { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; }
 .pop-links a { color: var(--caeruleum); }
 
 /* 행군 반경 이정표 라벨 */

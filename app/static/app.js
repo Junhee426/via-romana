@@ -134,21 +134,87 @@
     return 6.5;
   }
 
+  // ── 사진·설명 (Wikidata → 위키백과·위키미디어 공용) ──
+  // 유적에 Wikidata ID(wd)가 있으면 팝업을 연 뒤에 불러온다. 모두 키 없이 쓰는 공개 API
+  const wikiCache = new Map();   // wd → { photo, about } (실패하면 null)
+
+  const getJson = async (url) => {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(res.status);
+    return res.json();
+  };
+  const stripTags = (html) => {
+    const div = document.createElement("div");
+    div.innerHTML = html || "";
+    return div.textContent.trim();
+  };
+
+  async function loadWiki(wd) {
+    const api = "https://www.wikidata.org/w/api.php?format=json&origin=*";
+    const [entity, claims] = await Promise.all([
+      getJson(`${api}&action=wbgetentities&ids=${wd}&props=sitelinks|labels&languages=ko&sitefilter=kowiki|enwiki`),
+      getJson(`${api}&action=wbgetclaims&entity=${wd}&property=P18`),
+    ]);
+    const item = entity.entities?.[wd] || {};
+    const link = item.sitelinks?.kowiki || item.sitelinks?.enwiki;
+    const lang = item.sitelinks?.kowiki ? "ko" : "en";
+    const file = claims.claims?.P18?.[0]?.mainsnak?.datavalue?.value;
+
+    const [summary, image] = await Promise.all([
+      link
+        ? getJson(`https://${lang}.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(link.title)}`).catch(() => null)
+        : null,
+      file
+        ? getJson("https://commons.wikimedia.org/w/api.php?format=json&origin=*&action=query&prop=imageinfo"
+            + `&iiprop=url|extmetadata&iiurlwidth=640&iiextmetadatafilter=Artist|LicenseShortName&titles=${encodeURIComponent("File:" + file)}`)
+            .then((d) => Object.values(d.query?.pages || {})[0]?.imageinfo?.[0]).catch(() => null)
+        : null,
+    ]);
+
+    let photo = null;
+    if (image?.thumburl) {
+      const meta = image.extmetadata || {};
+      const credit = [stripTags(meta.Artist?.value), meta.LicenseShortName?.value].filter(Boolean).join(", ");
+      photo = { src: image.thumburl, href: image.descriptionurl, credit: credit || "Wikimedia Commons" };
+    } else if (summary?.thumbnail?.source) {
+      photo = { src: summary.thumbnail.source, href: summary.content_urls?.desktop?.page, credit: "위키백과" };
+    }
+    const about = summary?.extract
+      ? { text: summary.extract, lang, href: summary.content_urls?.desktop?.page }
+      : null;
+    return { label: item.labels?.ko?.value, photo, about };
+  }
+
   // ── 팝업 ────────────────────────────────────
-  function popupHtml(p) {
+  function popupHtml(p, wiki) {
     const cat = state.catByKey[p.cat];
     const period = p.from == null ? "연대 미상" : `${year(p.from)} ~ ${year(p.to)}`;
     const remains = REMAINS_LABEL[p.remains];
     const [lon, lat] = p.coordinates;
+    const loading = p.wd && wiki === undefined;
+    const photo = wiki?.photo;
+    const about = wiki?.about;
+    const label = wiki?.label && wiki.label !== p.name ? wiki.label : "";
     return `
+      ${loading ? '<div class="pop-photo pop-loading" aria-hidden="true"></div>' : ""}
+      ${photo ? `
+        <figure class="pop-photo">
+          <img src="${esc(photo.src)}" alt="${esc(p.name)}">
+          <figcaption><a href="${esc(photo.href)}" target="_blank" rel="noopener">사진: ${esc(photo.credit)}</a></figcaption>
+        </figure>` : ""}
       <p class="pop-name">${esc(p.name)}</p>
+      ${label ? `<p class="pop-label">${esc(label)}</p>` : ""}
       <span class="pop-cat" style="--c:${cat.color}"><span class="swatch"></span>${esc(cat.label)}</span>
       <dl class="pop-facts">
         <dt>시기</dt><dd>${period}</dd>
         ${remains ? `<dt>유적</dt><dd>${remains}</dd>` : ""}
         ${p.certain ? "" : "<dt>위치</dt><dd>추정 위치</dd>"}
       </dl>
-      ${p.desc ? `<p class="pop-desc" lang="en">${esc(p.desc)}</p>` : ""}
+      ${about ? `
+        <p class="pop-about" lang="${about.lang}">${esc(about.text)}</p>
+        <p class="pop-source"><a href="${esc(about.href)}" target="_blank" rel="noopener">${about.lang === "ko" ? "위키백과" : "영어 위키백과"}에서 더 읽기</a></p>`
+        : loading ? '<p class="pop-desc">사진과 설명을 불러오는 중…</p>'
+        : p.desc ? `<p class="pop-desc" lang="en">${esc(p.desc)}</p>` : ""}
       <div class="pop-links">
         <a href="https://pleiades.stoa.org/places/${encodeURIComponent(p.id)}" target="_blank" rel="noopener">Pleiades에서 보기</a>
         <a href="https://www.google.com/maps/search/?api=1&query=${lat},${lon}" target="_blank" rel="noopener">구글맵에서 보기</a>
@@ -183,9 +249,28 @@
   }
 
   const popup = L.popup({ maxWidth: 300 });
+  let popupSite = null;
+  // 사진 칸은 높이가 고정이라 사진이 늦게 떠도 팝업 크기는 그대로다
+  const showPopup = (p) => popup.setContent(popupHtml(p, wikiCache.get(p.wd)));
   function openSite(p) {
     const [lon, lat] = p.coordinates;
-    popup.setLatLng([lat, lon]).setContent(popupHtml(p)).openOn(map);
+    popupSite = p;
+    // 상단 바와 패널(모바일은 아래 시트)에 가리지 않게 여백을 두고 지도를 옮긴다
+    const narrow = window.matchMedia("(max-width: 899px)").matches;
+    popup.options.autoPanPaddingTopLeft = L.point(narrow ? 12 : 390, 72);
+    popup.options.autoPanPaddingBottomRight = L.point(12, narrow ? $("panel").offsetHeight + 12 : 12);
+    popup.setLatLng([lat, lon]);
+    popup.openOn(map);
+    showPopup(p);
+    if (p.wd && !wikiCache.has(p.wd)) {
+      loadWiki(p.wd)
+        .catch(() => null)
+        .then((wiki) => {
+          wikiCache.set(p.wd, wiki);
+          // 그사이 다른 유적을 열었거나 팝업을 닫았으면 그대로 둔다
+          if (popupSite === p && popup.isOpen()) showPopup(p);
+        });
+    }
   }
 
   function passes(p) {

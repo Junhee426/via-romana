@@ -14,6 +14,7 @@
 import argparse
 import csv
 import json
+import re
 import sys
 import urllib.request
 from collections import Counter, defaultdict
@@ -36,6 +37,9 @@ PLEIADES_FILES = [
     "location_polygons.csv",     # 면 위치 (요새, 원형극장 등)
 ]
 LOCATION_FILES = PLEIADES_FILES[2:]
+
+# Pleiades ↔ Wikidata 연결표. 유적 사진·설명은 지도에서 이 ID로 Wikidata·위키백과를 찾는다
+WIKIDATA_INDEX = "https://raw.githubusercontent.com/isawnyu/pleiades.datasets/main/data/indexes/wikidata.json"
 
 # 로마 시대로 볼 기간: 위치의 존속 기간이 이 구간과 겹치면 포함
 # Pleiades 기준 'roman'은 기원전 30년~서기 300년, 'late-antique'는 300~640년
@@ -85,6 +89,48 @@ def download(refresh=False):
             continue
         print(f"  내려받는 중: {name}")
         urllib.request.urlretrieve(PLEIADES_BASE + name, dest)
+    dest = RAW_DIR / "wikidata.json"
+    if refresh or not dest.exists():
+        print("  내려받는 중: wikidata.json")
+        urllib.request.urlretrieve(WIKIDATA_INDEX, dest)
+    else:
+        print("  있음: wikidata.json")
+
+
+def wikidata_ids():
+    """Pleiades ID → Wikidata QID.
+
+    연결표에는 장소 → QID, QID → 장소 두 방향이 섞여 있고 URL 표기도 제각각이다.
+    한 장소에 QID가 여럿이면 그 장소에만 연결된(더 구체적인) QID를 고른다.
+    """
+    with open(RAW_DIR / "wikidata.json", encoding="utf-8") as f:
+        index = json.load(f)
+
+    def qid(url):
+        m = re.search(r"wikidata\.org/.*?(Q\d+)$", url)
+        return m.group(1) if m else None
+
+    def pid(url):
+        m = re.search(r"pleiades\.stoa\.org/places/(\d+)", url)
+        return m.group(1) if m else None
+
+    candidates = defaultdict(set)
+    places_per_qid = defaultdict(set)
+    for key, entry in index.items():
+        links = entry.get("alignments", [])
+        if pid(key):
+            pairs = [(pid(key), qid(u)) for u in links]
+        else:
+            pairs = [(pid(u), qid(key)) for u in links]
+        for p, q in pairs:
+            if p and q:
+                candidates[p].add(q)
+                places_per_qid[q].add(p)
+
+    return {
+        p: min(qs, key=lambda q: (len(places_per_qid[q]), int(q[1:])))
+        for p, qs in candidates.items()
+    }
 
 
 def read_csv(name):
@@ -109,6 +155,7 @@ def short(text, limit=240):
 
 
 def build():
+    wikidata = wikidata_ids()
     types_by_place = defaultdict(list)
     for row in read_csv("places_place_types.csv"):
         types_by_place[row["place_id"]].append(row["place_type"])
@@ -167,6 +214,7 @@ def build():
                 "to": max(l["end"] for l in roman) if roman else None,
                 "remains": remains,
                 "certain": any(l["certainty"] == "certain" for l in locs) if locs else True,
+                "wd": wikidata.get(pid),
             },
         })
 
@@ -177,15 +225,21 @@ def build():
                   f, ensure_ascii=False, separators=(",", ":"))
 
     counts = Counter(f["properties"]["cat"] for f in features)
+    with_wd = sum(1 for f in features if f["properties"]["wd"])
     meta = {
         "built_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "total": len(features),
         "by_category": {c["key"]: counts.get(c["key"], 0) for c in CATEGORIES},
         "period": [ROMAN_START, ROMAN_END],
+        "with_wikidata": with_wd,
         "sources": [{
             "name": "Pleiades",
             "url": "https://pleiades.stoa.org",
             "license": "CC BY 3.0",
+        }, {
+            "name": "Wikidata",
+            "url": "https://www.wikidata.org",
+            "license": "CC0",
         }],
     }
     with open(OUT_DIR / "meta.json", "w", encoding="utf-8") as f:
@@ -194,6 +248,7 @@ def build():
     print(f"\n유적 {len(features):,}곳 저장 → data/processed/sites.geojson")
     for c in CATEGORIES:
         print(f"  {c['label']:<12} {counts.get(c['key'], 0):>6,}")
+    print(f"Wikidata 연결: {with_wd:,}곳")
     print("제외:", dict(skipped))
 
 
