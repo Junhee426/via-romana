@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Via Romana: 유럽의 로마 유적 지도</title>
+  <meta name="description" content="유럽에 남아 있는 로마 유적을 지도에서 찾아보세요.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏛️</text></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600&family=IBM+Plex+Sans+KR:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div id="map" aria-label="로마 유적 지도"></div>
+
+  <header class="topbar">
+    <h1 class="wordmark">Via Romana</h1>
+    <div class="basemap" role="group" aria-label="배경 지도">
+      <button type="button" data-base="map" aria-pressed="true">지도</button>
+      <button type="button" data-base="sat" aria-pressed="false">위성</button>
+    </div>
+  </header>
+
+  <aside class="panel" id="panel" data-state="peek">
+    <button type="button" class="panel-handle" id="panel-handle" aria-controls="panel" aria-expanded="false">
+      <span class="grip" aria-hidden="true"></span>
+      <span id="count-line">유적을 불러오는 중</span>
+      <span id="march-line" class="march-line" hidden></span>
+    </button>
+
+    <div class="panel-body">
+      <section class="filters" aria-label="유적 분류">
+        <div class="filters-head">
+          <h2>분류</h2>
+          <div class="filters-bulk">
+            <button type="button" class="link" id="all-on">모두 켜기</button>
+            <button type="button" class="link" id="all-off">모두 끄기</button>
+          </div>
+        </div>
+        <div class="chips" id="chips"></div>
+        <label class="switch">
+          <input type="checkbox" id="visible-only">
+          <span class="switch-track" aria-hidden="true"></span>
+          <span>유적이 남아 있는 곳만</span>
+        </label>
+        <p class="hint">진한 점은 유적이 지금도 남아 있는 곳이에요.</p>
+      </section>
+
+      <section class="march" id="march" aria-label="하루 행군 반경">
+        <h2>하루 행군</h2>
+        <p class="march-lede" id="march-lede">로마 군단은 하루 20 로마마일을 걸었어요. 출발점을 정하면 그 안의 유적을 가까운 순으로 보여 드려요.</p>
+        <div class="march-actions" id="march-actions">
+          <button type="button" class="btn primary" id="march-pick">지도에서 출발점 고르기</button>
+          <button type="button" class="btn" id="march-here">내 위치에서 출발</button>
+        </div>
+        <p class="march-status" id="march-status" role="status"></p>
+        <ol class="near-list" id="near-list"></ol>
+      </section>
+
+      <footer class="credits">
+        유적 데이터: <a href="https://pleiades.stoa.org" target="_blank" rel="noopener">Pleiades</a> (CC BY 3.0)
+      </footer>
+    </div>
+  </aside>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+# 원본 데이터는 스크립트로 내려받는다
+data/raw/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# OS / 에디터
+.DS_Store
+.vscode/
+.idea/

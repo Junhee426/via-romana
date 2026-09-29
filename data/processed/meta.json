@@ -1,0 +1,26 @@
+{
+  "built_at": "2026-09-29T19:59:42+00:00",
+  "total": 10580,
+  "by_category": {
+    "arena": 374,
+    "water": 354,
+    "military": 1482,
+    "sacred": 550,
+    "villa": 1486,
+    "road": 1156,
+    "burial": 561,
+    "industry": 617,
+    "town": 4000
+  },
+  "period": [
+    -30,
+    400
+  ],
+  "sources": [
+    {
+      "name": "Pleiades",
+      "url": "https://pleiades.stoa.org",
+      "license": "CC BY 3.0"
+    }
+  ]
+}
