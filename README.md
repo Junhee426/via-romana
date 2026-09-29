@@ -69,10 +69,10 @@ python scripts/build_sites.py --refresh  # 원본을 새로 받아서 다시 가
 
 CARTO 지도는 키 없이 쓰면 타일에 "API key required" 워터마크가 찍힌다. 비상업적 사용은 월 500만 타일 요청, 상업적 사용은 월 100만 요청까지 무료다.
 
-1. <https://carto.com/basemaps/apikey/> 에서 키를 발급 (약관: <https://carto.com/legal/basemap-terms/>)
-2. Render 대시보드 → 서비스 → Environment → `CARTO_API_KEY`에 키 입력 → 저장(자동 재배포)
+키는 `app/main.py`의 `CARTO_API_KEY` 기본값으로 들어 있다 (어차피 브라우저에 그대로 전달되는 키). 바꾸려면:
 
-로컬에서는 `CARTO_API_KEY=키 uvicorn app.main:app --reload`로 실행한다. 이 키도 브라우저에 그대로 전달된다.
+1. <https://carto.com/basemaps/apikey/> 에서 새 키를 발급 (약관: <https://carto.com/legal/basemap-terms/>)
+2. `app/main.py`의 기본값을 고치거나, Render 대시보드 → 서비스 → Environment → `CARTO_API_KEY`에 넣는다 (환경변수가 우선)
 
 ### Google 지도 연결
 

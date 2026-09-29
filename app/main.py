@@ -31,8 +31,9 @@ KML_MAX = 2000
 # 노출되는 키이므로 Google Cloud 콘솔에서 사이트 주소(리퍼러)로 제한해 둔다.
 GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY", "").strip()
 
-# CARTO 기본 지도 키. 없으면 타일에 "API key required" 워터마크가 찍힌다
-CARTO_API_KEY = os.environ.get("CARTO_API_KEY", "").strip()
+# CARTO 기본 지도 키. 없으면 타일에 "API key required" 워터마크가 찍힌다.
+# 어차피 브라우저에 그대로 전달되는 키라 기본값을 코드에 둔다. 환경변수가 있으면 그 값을 쓴다
+CARTO_API_KEY = os.environ.get("CARTO_API_KEY", "").strip() or "cb1_441g_1_277638e48694845229389e55"
 
 app = FastAPI(title="via-romana", version="0.1.0")
 app.add_middleware(GZipMiddleware, minimum_size=1000)
