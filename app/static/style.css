@@ -244,7 +244,7 @@ button { font: inherit; color: inherit; }
 .hint { margin: 8px 0 0; font-size: 12.5px; color: var(--tufa); }
 
 /* ── 하루 행군 ───────────────────────────── */
-.march { padding-top: 18px; }
+.march { padding: 18px 0; border-bottom: 1px solid var(--line); }
 .march-lede { margin: 6px 0 12px; font-size: 14px; }
 .march-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 
@@ -261,6 +261,11 @@ button { font: inherit; color: inherit; }
 
 .march-status { margin: 10px 0 0; font-size: 13.5px; color: var(--tufa); min-height: 1em; }
 .march-status:empty { display: none; }
+.march-status a { color: var(--caeruleum); }
+
+/* ── 구글 지도로 가져가기 ─────────────────── */
+.export { padding-top: 18px; }
+.export-lede { margin: 6px 0 12px; font-size: 14px; }
 
 .near-list { list-style: none; margin: 10px 0 0; padding: 0; }
 .near-list li + li { border-top: 1px solid var(--line); }

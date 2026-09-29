@@ -7,7 +7,8 @@
 - [Pleiades](https://pleiades.stoa.org) 기반 유럽 로마 유적 약 1만 곳, 9개 분류
 - 분류별 켜기·끄기, 유적이 남아 있는 곳만 보기
 - **하루 행군**: 출발점을 고르면 로마 군단 하루 행군 거리(20 로마마일 ≈ 29.6km) 안의 유적을 가까운 순으로
-- 지도·위성 배경 전환, 유적별 Pleiades 링크와 길찾기
+- 지도·위성 배경 전환 (Google 지도 키가 있으면 Google 지도), 유적별 Pleiades·구글맵 링크와 길찾기
+- 화면 또는 행군 반경의 유적을 KML로 받아 Google 내 지도로 가져가기
 
 ## 구조
 
@@ -52,6 +53,7 @@ python scripts/build_sites.py --refresh  # 원본을 새로 받아서 다시 가
 | `GET /api/sites?cat=arena,water&visible=true&bbox=서,남,동,북` | 유적 GeoJSON |
 | `GET /api/sites/{id}` | 유적 하나 (id는 Pleiades ID) |
 | `GET /api/near?lat=43.84&lon=4.36&km=29.6` | 반경 안 유적, 가까운 순 |
+| `GET /api/export.kml?bbox=서,남,동,북` 또는 `?lat=…&lon=…&km=…` | Google 내 지도용 KML (최대 2,000곳, `cat`·`visible` 필터 가능) |
 | `GET /healthz` | 상태 확인 (Render 헬스체크) |
 
 분류 키: `arena` 원형극장·극장, `water` 수도교·목욕탕, `military` 요새·성벽, `sacred` 신전·성소, `villa` 빌라, `road` 다리·도로 시설, `burial` 무덤·기념물, `industry` 광산·항구·생산지, `town` 도시·정착지
@@ -61,6 +63,20 @@ python scripts/build_sites.py --refresh  # 원본을 새로 받아서 다시 가
 1. Render 대시보드에서 **New → Blueprint** 를 고르고 이 저장소를 연결
 2. `render.yaml`이 자동으로 읽힘 → **Apply**
 3. 이후 `main` 브랜치에 푸시할 때마다 자동 배포
+
+### Google 지도 연결
+
+- **링크(설정 필요 없음)**: 유적 팝업의 "구글맵에서 보기"와 "길찾기"는 키 없이 Google 지도 앱·웹으로 연결된다.
+- **내 지도로 가져가기(설정 필요 없음)**: 패널의 "KML 파일 받기" → [Google 내 지도](https://www.google.com/maps/d/)에서 새 지도 → 가져오기. 휴대폰 구글맵의 저장됨 → 지도에서도 보인다. 레이어 하나에 2,000곳까지라 그보다 많으면 지도를 확대해서 받는다.
+- **배경 지도를 Google 지도로(선택)**: 환경변수 `GOOGLE_MAPS_API_KEY`가 있으면 "지도"·"위성" 배경이 Google 지도로 바뀐다. 없거나 키가 거부되면 기존 CARTO·Esri 지도를 그대로 쓴다.
+  1. [Google Cloud 콘솔](https://console.cloud.google.com/)에서 프로젝트를 만들고 결제 계정을 연결
+  2. API 및 서비스 → 라이브러리 → **Map Tiles API** 사용 설정
+  3. 사용자 인증 정보 → API 키 만들기 → 키 제한
+     - 애플리케이션 제한: **웹사이트**, `https://via-romana.onrender.com/*` (로컬에서 쓰려면 `http://127.0.0.1:8000/*`도)
+     - API 제한: **Map Tiles API**만
+  4. Render 대시보드 → 서비스 → Environment → `GOOGLE_MAPS_API_KEY`에 키 입력 → 저장(자동 재배포)
+
+  키는 브라우저에 그대로 전달되므로 위의 리퍼러·API 제한을 반드시 걸어 둔다. 무료 사용량을 넘기면 요금이 나오니 Cloud 콘솔에서 할당량(일일 요청 수) 상한도 정해 두면 안전하다.
 
 무료 플랜은 한동안 접속이 없으면 잠들었다가, 다음 접속 때 깨어나느라 첫 로딩이 느릴 수 있다.
 

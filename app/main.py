@@ -6,10 +6,13 @@ Render:     render.yaml의 startCommand 참고
 
 import json
 import math
+import os
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 
 from app.categories import CATEGORIES, CATEGORY_BY_KEY, VISIBLE_REMAINS
@@ -20,6 +23,13 @@ DATA = ROOT / "data" / "processed"
 # 로마 군단의 표준 하루 행군 거리: 20 로마마일
 ROMAN_MILE_KM = 1.48
 DAY_MARCH_KM = round(20 * ROMAN_MILE_KM, 1)
+
+# Google 내 지도(My Maps)는 레이어 하나에 2,000곳까지 가져올 수 있다
+KML_MAX = 2000
+
+# 있으면 배경 지도를 Google 지도로 쓴다 (Map Tiles API). 브라우저에 그대로
+# 노출되는 키이므로 Google Cloud 콘솔에서 사이트 주소(리퍼러)로 제한해 둔다.
+GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY", "").strip()
 
 app = FastAPI(title="via-romana", version="0.1.0")
 app.add_middleware(GZipMiddleware, minimum_size=1000)
@@ -73,6 +83,40 @@ def matches(feature, cats, visible):
     return True
 
 
+def parse_bbox(bbox: str | None):
+    if not bbox:
+        return None
+    try:
+        west, south, east, north = (float(v) for v in bbox.split(","))
+    except ValueError:
+        raise HTTPException(400, "bbox 형식은 서,남,동,북 입니다")
+    return west, south, east, north
+
+
+def in_box(feature, box):
+    lon, lat = feature["geometry"]["coordinates"]
+    return box[0] <= lon <= box[2] and box[1] <= lat <= box[3]
+
+
+def search_near(lat, lon, km, cats, visible):
+    """반경 안의 유적을 (거리, feature) 목록으로, 가까운 순."""
+    # 위도·경도 상자로 먼저 거르고 정확한 거리를 계산
+    dlat = km / 111.0
+    dlon = km / (111.0 * max(math.cos(math.radians(lat)), 0.01))
+    found = []
+    for f in SITES:
+        flon, flat = f["geometry"]["coordinates"]
+        if abs(flat - lat) > dlat or abs(flon - lon) > dlon:
+            continue
+        if not matches(f, cats, visible):
+            continue
+        d = haversine_km(lat, lon, flat, flon)
+        if d <= km:
+            found.append((d, f))
+    found.sort(key=lambda x: x[0])
+    return found
+
+
 @app.get("/healthz")
 def healthz():
     return {"ok": True, "sites": len(SITES)}
@@ -88,6 +132,8 @@ def meta():
         "sources": META.get("sources", []),
         "day_march_km": DAY_MARCH_KM,
         "roman_mile_km": ROMAN_MILE_KM,
+        "kml_max": KML_MAX,
+        "google_maps_key": GOOGLE_MAPS_API_KEY or None,
         "categories": [
             {"key": c["key"], "label": c["label"], "color": c["color"],
              "count": counts.get(c["key"], 0)}
@@ -104,23 +150,11 @@ def sites(
 ):
     """유적 목록을 GeoJSON FeatureCollection으로 돌려준다."""
     cats = parse_cats(cat)
-    box = None
-    if bbox:
-        try:
-            west, south, east, north = (float(v) for v in bbox.split(","))
-            box = (west, south, east, north)
-        except ValueError:
-            raise HTTPException(400, "bbox 형식은 서,남,동,북 입니다")
-
-    result = []
-    for f in SITES:
-        if not matches(f, cats, visible):
-            continue
-        if box:
-            lon, lat = f["geometry"]["coordinates"]
-            if not (box[0] <= lon <= box[2] and box[1] <= lat <= box[3]):
-                continue
-        result.append(f)
+    box = parse_bbox(bbox)
+    result = [
+        f for f in SITES
+        if matches(f, cats, visible) and (box is None or in_box(f, box))
+    ]
     return {"type": "FeatureCollection", "features": result}
 
 
@@ -142,21 +176,7 @@ def near(
     limit: int = Query(50, ge=1, le=500),
 ):
     """한 지점에서 반경 안의 유적을 가까운 순으로."""
-    cats = parse_cats(cat)
-    # 위도·경도 상자로 먼저 거르고 정확한 거리를 계산
-    dlat = km / 111.0
-    dlon = km / (111.0 * max(math.cos(math.radians(lat)), 0.01))
-    found = []
-    for f in SITES:
-        flon, flat = f["geometry"]["coordinates"]
-        if abs(flat - lat) > dlat or abs(flon - lon) > dlon:
-            continue
-        if not matches(f, cats, visible):
-            continue
-        d = haversine_km(lat, lon, flat, flon)
-        if d <= km:
-            found.append((d, f))
-    found.sort(key=lambda x: x[0])
+    found = search_near(lat, lon, km, parse_cats(cat), visible)
     return {
         "center": [lon, lat],
         "km": km,
@@ -167,6 +187,74 @@ def near(
             for d, f in found[:limit]
         ],
     }
+
+
+def kml_color(hex_color):
+    """#RRGGBB → KML의 aabbggrr."""
+    r, g, b = hex_color[1:3], hex_color[3:5], hex_color[5:7]
+    return f"ff{b}{g}{r}".lower()
+
+
+def to_kml(features, title):
+    styles = "".join(
+        f'<Style id="{c["key"]}"><IconStyle><color>{kml_color(c["color"])}</color>'
+        f"<Icon><href>https://maps.google.com/mapfiles/kml/shapes/placemark_circle.png</href></Icon>"
+        f"</IconStyle></Style>"
+        for c in CATEGORIES
+    )
+    folders = []
+    for c in CATEGORIES:
+        marks = []
+        for f in features:
+            p = f["properties"]
+            if p["cat"] != c["key"]:
+                continue
+            lon, lat = f["geometry"]["coordinates"]
+            desc = f'{p.get("desc") or ""}\nhttps://pleiades.stoa.org/places/{p["id"]}'.strip()
+            marks.append(
+                f"<Placemark><name>{escape(p['name'])}</name>"
+                f"<description>{escape(desc)}</description>"
+                f"<styleUrl>#{c['key']}</styleUrl>"
+                f"<Point><coordinates>{lon},{lat}</coordinates></Point></Placemark>"
+            )
+        if marks:
+            folders.append(f"<Folder><name>{escape(c['label'])}</name>{''.join(marks)}</Folder>")
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<kml xmlns="http://www.opengis.net/kml/2.2"><Document>'
+        f"<name>{escape(title)}</name>{styles}{''.join(folders)}</Document></kml>"
+    )
+
+
+@app.get("/api/export.kml")
+def export_kml(
+    cat: str | None = None,
+    visible: bool = False,
+    bbox: str | None = Query(None, description="서,남,동,북: 이 범위 안의 유적"),
+    lat: float | None = Query(None, ge=-90, le=90),
+    lon: float | None = Query(None, ge=-180, le=180),
+    km: float = Query(DAY_MARCH_KM, gt=0, le=300),
+):
+    """Google 내 지도(My Maps)로 가져갈 KML. bbox 또는 lat·lon(반경 km) 중 하나."""
+    cats = parse_cats(cat)
+    if lat is not None and lon is not None:
+        features = [f for _, f in search_near(lat, lon, km, cats, visible)]
+        title = f"Via Romana: 하루 행군 반경 ({km}km)"
+    elif bbox:
+        box = parse_bbox(bbox)
+        features = [f for f in SITES if matches(f, cats, visible) and in_box(f, box)]
+        title = "Via Romana: 로마 유적"
+    else:
+        raise HTTPException(400, "bbox 또는 lat·lon이 필요합니다")
+    if len(features) > KML_MAX:
+        raise HTTPException(
+            400, f"유적이 {len(features):,}곳으로 {KML_MAX:,}곳을 넘습니다. 지도를 더 확대해 주세요"
+        )
+    return Response(
+        to_kml(features, title),
+        media_type="application/vnd.google-earth.kml+xml",
+        headers={"Content-Disposition": 'attachment; filename="via-romana.kml"'},
+    )
 
 
 # API 경로를 모두 등록한 뒤에 정적 파일(지도)을 루트에 붙인다

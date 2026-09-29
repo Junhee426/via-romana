@@ -12,3 +12,6 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.12.7"
+      # 선택: 있으면 배경 지도를 Google 지도로 쓴다. 값은 Render 대시보드에서 입력
+      - key: GOOGLE_MAPS_API_KEY
+        sync: false

@@ -53,19 +53,78 @@
       attribution: "Tiles &copy; Esri",
     }),
   };
+  let baseKey = "map";
   bases.map.addTo(map);
   map.attributionControl.addAttribution('유적: <a href="https://pleiades.stoa.org">Pleiades</a>');
 
-  document.querySelectorAll(".basemap button").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const key = btn.dataset.base;
-      Object.entries(bases).forEach(([k, layer]) => {
-        if (k === key) layer.addTo(map); else map.removeLayer(layer);
-      });
-      document.querySelectorAll(".basemap button").forEach((b) =>
-        b.setAttribute("aria-pressed", String(b === btn)));
+  function showBase(key) {
+    baseKey = key;
+    Object.entries(bases).forEach(([k, layer]) => {
+      if (k === key) layer.addTo(map); else map.removeLayer(layer);
     });
+    document.querySelectorAll(".basemap button").forEach((b) =>
+      b.setAttribute("aria-pressed", String(b.dataset.base === key)));
+    if (google) updateGoogleCredit();
+  }
+  document.querySelectorAll(".basemap button").forEach((btn) => {
+    btn.addEventListener("click", () => showBase(btn.dataset.base));
   });
+
+  // ── Google 배경 지도 (서버에 GOOGLE_MAPS_API_KEY가 있을 때만) ──
+  // Map Tiles API: 지도 유형마다 세션을 만들고, 화면 범위의 저작권 표시를 받아 띄운다
+  const GTILE = "https://tile.googleapis.com";
+  let google = null;   // { key, sessions: { map, sat } }
+  let googleCredit = "";
+
+  async function useGoogle(key) {
+    const make = async (mapType) => {
+      const res = await fetch(`${GTILE}/v1/createSession?key=${encodeURIComponent(key)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mapType, language: "ko-KR", region: "KR" }),
+      });
+      if (!res.ok) throw new Error(res.status);
+      return (await res.json()).session;
+    };
+    try {
+      const [roadmap, satellite] = await Promise.all([make("roadmap"), make("satellite")]);
+      google = { key, sessions: { map: roadmap, sat: satellite } };
+    } catch (err) {
+      console.warn("Google 지도를 쓸 수 없어 기본 지도를 씁니다.", err);
+      return;
+    }
+    for (const k of ["map", "sat"]) {
+      map.removeLayer(bases[k]);
+      bases[k] = L.tileLayer(
+        `${GTILE}/v1/2dtiles/{z}/{x}/{y}?session=${google.sessions[k]}&key=${encodeURIComponent(key)}`,
+        { maxZoom: 21, maxNativeZoom: k === "sat" ? 20 : 21, attribution: "" },
+      );
+    }
+    showBase(baseKey);
+    map.on("moveend", updateGoogleCredit);
+  }
+
+  async function updateGoogleCredit() {
+    const b = map.getBounds();
+    const params = new URLSearchParams({
+      session: google.sessions[baseKey],
+      key: google.key,
+      zoom: map.getZoom(),
+      north: b.getNorth(), south: b.getSouth(),
+      east: b.getEast(), west: b.getWest(),
+    });
+    let text = "Google";
+    try {
+      const res = await fetch(`${GTILE}/tile/v1/viewport?${params}`);
+      if (res.ok) {
+        const { copyright } = await res.json();
+        if (copyright) text = `Google · ${copyright}`;
+      }
+    } catch { /* 저작권 표시는 기본값으로 */ }
+    if (googleCredit) map.attributionControl.removeAttribution(googleCredit);
+    googleCredit = esc(text);
+    map.attributionControl.addAttribution(googleCredit);
+  }
 
   const markerLayer = L.layerGroup().addTo(map);
 
@@ -92,6 +151,7 @@
       ${p.desc ? `<p class="pop-desc" lang="en">${esc(p.desc)}</p>` : ""}
       <div class="pop-links">
         <a href="https://pleiades.stoa.org/places/${encodeURIComponent(p.id)}" target="_blank" rel="noopener">Pleiades에서 보기</a>
+        <a href="https://www.google.com/maps/search/?api=1&query=${lat},${lon}" target="_blank" rel="noopener">구글맵에서 보기</a>
         <a href="https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}" target="_blank" rel="noopener">길찾기</a>
       </div>`;
   }
@@ -312,6 +372,42 @@
     $("march-clear").addEventListener("click", clearMarch);
   }
 
+  // ── Google 내 지도(My Maps)로 내보내기 ──────────
+  // 행군 반경이 있으면 그 안의 유적, 없으면 지금 화면에 보이는 유적을 KML로 받는다
+  $("export-kml").addEventListener("click", () => {
+    const status = $("export-status");
+    if (state.active.size === 0) {
+      status.textContent = "켜진 분류가 없어요. 분류를 하나 이상 켜 주세요.";
+      return;
+    }
+    const params = new URLSearchParams();
+    if (state.active.size !== state.meta.categories.length) {
+      params.set("cat", [...state.active].join(","));
+    }
+    if (state.visibleOnly) params.set("visible", "true");
+    if (state.march) {
+      const [lat, lon] = state.march.center;
+      params.set("lat", lat);
+      params.set("lon", lon);
+      params.set("km", state.meta.day_march_km);
+    } else {
+      const b = map.getBounds();
+      const n = state.markers.filter(({ marker, props }) =>
+        passes(props) && b.contains(marker.getLatLng())).length;
+      if (n === 0) {
+        status.textContent = "지금 화면에 유적이 없어요.";
+        return;
+      }
+      if (n > state.meta.kml_max) {
+        status.textContent = `화면에 유적이 ${fmt.format(n)}곳이에요. 내 지도는 한 번에 ${fmt.format(state.meta.kml_max)}곳까지라 지도를 더 확대해 주세요.`;
+        return;
+      }
+      params.set("bbox", [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].join(","));
+    }
+    status.innerHTML = 'KML 파일을 받았어요. <a href="https://www.google.com/maps/d/" target="_blank" rel="noopener">Google 내 지도</a>에서 새 지도 → 가져오기로 올리세요.';
+    window.location.href = `/api/export.kml?${params}`;
+  });
+
   // ── 아래 시트(모바일) ─────────────────────────
   function setPanel(s) {
     $("panel").dataset.state = s;
@@ -340,6 +436,7 @@
       state.active = new Set(meta.categories.map((c) => c.key));
       $("march-lede").textContent =
         `로마 군단은 하루 20 로마마일(약 ${meta.day_march_km}km)을 걸었어요. 출발점을 정하면 그 안의 유적을 가까운 순으로 보여 드려요.`;
+      if (meta.google_maps_key) useGoogle(meta.google_maps_key);
       buildChips();
       buildMarkers(sites.features);
       bindMarchButtons();
