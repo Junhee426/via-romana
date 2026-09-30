@@ -5,8 +5,10 @@ Render:     render.yaml의 startCommand 참고
 """
 
 import json
+import logging
 import math
 import os
+import unicodedata
 from pathlib import Path
 from xml.sax.saxutils import escape
 
@@ -19,6 +21,9 @@ from app.categories import CATEGORIES, CATEGORY_BY_KEY, VISIBLE_REMAINS
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "data" / "processed"
+CURATED = ROOT / "data" / "curated.json"
+
+log = logging.getLogger("via-romana")
 
 # 로마 군단의 표준 하루 행군 거리: 20 로마마일
 ROMAN_MILE_KM = 1.48
@@ -64,9 +69,51 @@ def load_meta():
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
 
 
+def normalize(text: str) -> str:
+    """검색용 정규화: 악센트 제거, 소문자, 공백 하나로. app.js의 normalize()와 같은 규칙."""
+    decomposed = unicodedata.normalize("NFKD", text or "")
+    stripped = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+    return " ".join(stripped.lower().split())
+
+
+def load_curated(sites_by_id):
+    """손으로 고른 한국어 별칭과 시작 지역. id·name이 실제 데이터와 맞지 않는 별칭은 버린다."""
+    if not CURATED.exists():
+        return {}, []
+    data = json.loads(CURATED.read_text(encoding="utf-8"))
+    aliases = {}
+    for a in data.get("aliases", []):
+        f = sites_by_id.get(a["id"])
+        if not f or f["properties"]["name"] != a["name"]:
+            log.warning("별칭을 건너뜀: %s (%s)이 데이터와 맞지 않음", a["id"], a["name"])
+            continue
+        aliases[a["id"]] = a["ko"]
+    return aliases, data.get("regions", [])
+
+
 SITES = load_sites()
 SITES_BY_ID = {f["properties"]["id"]: f for f in SITES}
 META = load_meta()
+ALIASES, REGIONS = load_curated(SITES_BY_ID)
+
+# 검색 대상: 원래 이름 + Pleiades 설명 + 확인된 한국어 별칭
+SEARCH_TEXT = {
+    f["properties"]["id"]: normalize(" ".join([
+        f["properties"]["name"], f["properties"].get("desc") or "", *ALIASES.get(f["properties"]["id"], []),
+    ]))
+    for f in SITES
+}
+
+# 응답용: 별칭이 있는 유적만 ko 속성을 붙인 사본으로 바꾼다 (원본 데이터는 그대로)
+SITES_OUT = [
+    {**f, "properties": {**f["properties"], "ko": ALIASES[f["properties"]["id"]]}}
+    if f["properties"]["id"] in ALIASES else f
+    for f in SITES
+]
+
+_lons = [f["geometry"]["coordinates"][0] for f in SITES]
+_lats = [f["geometry"]["coordinates"][1] for f in SITES]
+EXTENT = [min(_lons), min(_lats), max(_lons), max(_lats)]   # 서, 남, 동, 북
 
 
 def haversine_km(lat1, lon1, lat2, lon2):
@@ -78,7 +125,8 @@ def haversine_km(lat1, lon1, lat2, lon2):
 
 
 def parse_cats(cat: str | None):
-    if not cat:
+    """None(파라미터 없음) = 모든 분류, 빈 문자열(cat=) = 아무 분류도 아님."""
+    if cat is None:
         return None
     keys = {c.strip() for c in cat.split(",") if c.strip()}
     unknown = keys - CATEGORY_BY_KEY.keys()
@@ -87,12 +135,21 @@ def parse_cats(cat: str | None):
     return keys
 
 
-def matches(feature, cats, visible):
+def parse_q(q: str | None):
+    """검색어를 정규화한 단어 목록으로. 모든 단어가 들어 있어야 일치한다."""
+    return normalize(q or "").split()
+
+
+def matches(feature, cats, visible, terms=()):
     props = feature["properties"]
-    if cats and props["cat"] not in cats:
+    if cats is not None and props["cat"] not in cats:
         return False
     if visible and props["remains"] not in VISIBLE_REMAINS:
         return False
+    if terms:
+        text = SEARCH_TEXT[props["id"]]
+        if not all(t in text for t in terms):
+            return False
     return True
 
 
@@ -111,7 +168,7 @@ def in_box(feature, box):
     return box[0] <= lon <= box[2] and box[1] <= lat <= box[3]
 
 
-def search_near(lat, lon, km, cats, visible):
+def search_near(lat, lon, km, cats, visible, terms=()):
     """반경 안의 유적을 (거리, feature) 목록으로, 가까운 순."""
     # 위도·경도 상자로 먼저 거르고 정확한 거리를 계산
     dlat = km / 111.0
@@ -121,7 +178,7 @@ def search_near(lat, lon, km, cats, visible):
         flon, flat = f["geometry"]["coordinates"]
         if abs(flat - lat) > dlat or abs(flon - lon) > dlon:
             continue
-        if not matches(f, cats, visible):
+        if not matches(f, cats, visible, terms):
             continue
         d = haversine_km(lat, lon, flat, flon)
         if d <= km:
@@ -148,6 +205,8 @@ def meta():
         "kml_max": KML_MAX,
         "google_maps_key": GOOGLE_MAPS_API_KEY or None,
         "carto_key": CARTO_API_KEY or None,
+        "extent": EXTENT,
+        "regions": REGIONS,
         "categories": [
             {"key": c["key"], "label": c["label"], "color": c["color"],
              "count": counts.get(c["key"], 0)}
@@ -161,13 +220,15 @@ def sites(
     cat: str | None = Query(None, description="분류 키, 쉼표로 여러 개 (예: arena,water)"),
     visible: bool = Query(False, description="유적이 남아 있는 곳만"),
     bbox: str | None = Query(None, description="서,남,동,북 (경도·위도)"),
+    q: str | None = Query(None, description="검색어: 이름·설명·한국어 별칭에 모든 단어가 들어 있는 유적"),
 ):
-    """유적 목록을 GeoJSON FeatureCollection으로 돌려준다."""
+    """유적 목록을 GeoJSON FeatureCollection으로 돌려준다. 확인된 한국어 별칭이 있으면 ko 속성."""
     cats = parse_cats(cat)
     box = parse_bbox(bbox)
+    terms = parse_q(q)
     result = [
-        f for f in SITES
-        if matches(f, cats, visible) and (box is None or in_box(f, box))
+        out for f, out in zip(SITES, SITES_OUT)
+        if matches(f, cats, visible, terms) and (box is None or in_box(f, box))
     ]
     return {"type": "FeatureCollection", "features": result}
 
@@ -188,16 +249,18 @@ def near(
     cat: str | None = None,
     visible: bool = False,
     limit: int = Query(50, ge=1, le=500),
+    q: str | None = Query(None, description="검색어: 이름·설명·한국어 별칭에 모든 단어가 들어 있는 유적"),
 ):
     """한 지점에서 반경 안의 유적을 가까운 순으로."""
-    found = search_near(lat, lon, km, parse_cats(cat), visible)
+    found = search_near(lat, lon, km, parse_cats(cat), visible, parse_q(q))
     return {
         "center": [lon, lat],
         "km": km,
         "count": len(found),
         "sites": [
             {**f["properties"], "coordinates": f["geometry"]["coordinates"],
-             "distance_km": round(d, 2)}
+             "distance_km": round(d, 2),
+             **({"ko": ALIASES[f["properties"]["id"]]} if f["properties"]["id"] in ALIASES else {})}
             for d, f in found[:limit]
         ],
     }
@@ -248,18 +311,22 @@ def export_kml(
     lat: float | None = Query(None, ge=-90, le=90),
     lon: float | None = Query(None, ge=-180, le=180),
     km: float = Query(DAY_MARCH_KM, gt=0, le=300),
+    q: str | None = Query(None, description="검색어: 이름·설명·한국어 별칭에 모든 단어가 들어 있는 유적"),
 ):
     """Google 내 지도(My Maps)로 가져갈 KML. bbox 또는 lat·lon(반경 km) 중 하나."""
     cats = parse_cats(cat)
+    terms = parse_q(q)
     if lat is not None and lon is not None:
-        features = [f for _, f in search_near(lat, lon, km, cats, visible)]
+        features = [f for _, f in search_near(lat, lon, km, cats, visible, terms)]
         title = f"Via Romana: 하루 행군 반경 ({km}km)"
     elif bbox:
         box = parse_bbox(bbox)
-        features = [f for f in SITES if matches(f, cats, visible) and in_box(f, box)]
+        features = [f for f in SITES if matches(f, cats, visible, terms) and in_box(f, box)]
         title = "Via Romana: 로마 유적"
     else:
         raise HTTPException(400, "bbox 또는 lat·lon이 필요합니다")
+    if not features:
+        raise HTTPException(404, "조건에 맞는 유적이 없습니다")
     if len(features) > KML_MAX:
         raise HTTPException(
             400, f"유적이 {len(features):,}곳으로 {KML_MAX:,}곳을 넘습니다. 지도를 더 확대해 주세요"

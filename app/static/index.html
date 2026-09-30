@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
   <title>Via Romana: 유럽의 로마 유적 지도</title>
   <meta name="description" content="유럽에 남아 있는 로마 유적을 지도에서 찾아보세요.">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏛️</text></svg>">
@@ -12,66 +12,130 @@
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
   <link rel="stylesheet" href="/style.css">
 </head>
-<body>
-  <div id="map" aria-label="로마 유적 지도"></div>
+<body data-phase="loading">
+  <div id="map" role="region" aria-label="로마 유적 지도"></div>
 
   <header class="topbar">
     <h1 class="wordmark">Via Romana</h1>
+    <form class="search" id="search-form" role="search" autocomplete="off">
+      <label class="sr-only" for="search">유적 검색</label>
+      <input id="search" type="search" placeholder="유적 검색 (예: 콜로세움, Pont du Gard)"
+             enterkeyhint="search" spellcheck="false" data-needs-data disabled>
+      <button type="button" class="search-clear" id="search-clear" aria-label="검색어 지우기" hidden>×</button>
+    </form>
     <div class="basemap" role="group" aria-label="배경 지도">
       <button type="button" data-base="map" aria-pressed="true">지도</button>
       <button type="button" data-base="sat" aria-pressed="false">위성</button>
     </div>
   </header>
 
-  <aside class="panel" id="panel" data-state="peek">
-    <button type="button" class="panel-handle" id="panel-handle" aria-controls="panel" aria-expanded="false">
-      <span class="grip" aria-hidden="true"></span>
-      <span id="count-line">유적을 불러오는 중</span>
-      <span id="march-line" class="march-line" hidden></span>
-    </button>
+  <!-- 출발점 고르기 중에는 시트를 접어도 항상 보인다 -->
+  <div class="map-banner" id="pick-banner" role="status" hidden>
+    <span>지도를 눌러 출발점을 고르세요</span>
+    <div class="map-banner-actions">
+      <button type="button" class="btn" id="pick-center">지도 중심에서 출발</button>
+      <button type="button" class="btn primary" id="pick-cancel">취소</button>
+    </div>
+  </div>
 
-    <div class="panel-body">
-      <section class="filters" aria-label="유적 분류">
-        <div class="filters-head">
-          <h2>분류</h2>
-          <div class="filters-bulk">
-            <button type="button" class="link" id="all-on">모두 켜기</button>
-            <button type="button" class="link" id="all-off">모두 끄기</button>
+  <div class="map-banner warn" id="base-error" role="alert" hidden>
+    <span>배경 지도를 불러오지 못했어요. 검색과 목록은 계속 쓸 수 있어요.</span>
+    <div class="map-banner-actions">
+      <button type="button" class="btn" id="base-retry">다시 시도</button>
+      <button type="button" class="btn" id="base-switch">다른 배경으로</button>
+    </div>
+  </div>
+
+  <aside class="panel" id="panel" data-state="peek" aria-label="유적 탐색">
+    <div class="panel-head">
+      <button type="button" class="panel-handle" id="panel-handle" aria-controls="panel-main" aria-expanded="false">
+        <span class="grip" aria-hidden="true"></span>
+        <span class="count-line" id="count-line">유적을 불러오는 중…</span>
+        <span class="count-sub" id="count-sub"></span>
+      </button>
+      <div class="load-error" id="load-error" role="alert" hidden>
+        <p id="load-error-msg">유적 데이터를 불러오지 못했어요.</p>
+        <button type="button" class="btn primary" id="retry">다시 시도</button>
+      </div>
+      <div class="regions-row" id="regions-row" hidden>
+        <span class="regions-label" id="regions-label">시작 지역</span>
+        <div class="regions" id="regions" role="group" aria-labelledby="regions-label"></div>
+      </div>
+    </div>
+
+    <div class="panel-main" id="panel-main">
+      <div class="view" id="view-list">
+        <details class="filters" id="filters">
+          <summary>
+            <span>분류·유적 상태</span>
+            <span class="filter-summary" id="filter-summary"></span>
+          </summary>
+          <div class="filters-body">
+            <div class="filters-bulk">
+              <button type="button" class="link" id="all-on" data-needs-data disabled>모두 켜기</button>
+              <button type="button" class="link" id="all-off" data-needs-data disabled>모두 끄기</button>
+            </div>
+            <div class="chips" id="chips" role="group" aria-label="유적 분류"></div>
+            <label class="switch">
+              <input type="checkbox" id="visible-only" data-needs-data disabled>
+              <span class="switch-track" aria-hidden="true"></span>
+              <span>유적이 남아 있는 곳만</span>
+            </label>
+            <p class="hint">진한 점은 유적이 지금도 남아 있는 곳이에요. 남아 있다는 것은 발굴·보존 상태이고, 개방이나 입장 가능 여부와는 달라요.</p>
           </div>
+        </details>
+
+        <section class="march" id="march" aria-labelledby="march-title">
+          <h2 id="march-title">하루 행군</h2>
+          <p class="march-lede" id="march-lede">로마 군단은 하루 20 로마마일을 걸었어요. 출발점을 정하면 그 반경 안의 유적을 가까운 순으로 보여 드려요.</p>
+          <p class="march-note">20 로마마일을 참고한 직선 반경이에요. 실제 도보 거리나 고대 가도 경로가 아니에요.</p>
+          <div class="march-actions">
+            <button type="button" class="btn primary" id="march-pick" data-needs-data disabled>지도에서 출발점 고르기</button>
+            <button type="button" class="btn" id="march-here" data-needs-data disabled>내 위치에서 출발</button>
+            <button type="button" class="btn" id="march-clear" hidden>반경 지우기</button>
+          </div>
+          <div class="status" id="march-status" role="status"></div>
+        </section>
+
+        <section class="results" aria-labelledby="results-title">
+          <div class="results-head">
+            <h2 id="results-title" tabindex="-1">유적 목록</h2>
+            <div class="scope" role="group" aria-label="목록 범위">
+              <button type="button" data-scope="view" aria-pressed="true" data-needs-data disabled>지금 지도 범위</button>
+              <button type="button" data-scope="all" aria-pressed="false" data-needs-data disabled>전체</button>
+              <button type="button" data-scope="march" aria-pressed="false" hidden>행군 반경</button>
+            </div>
+          </div>
+          <p class="results-summary" id="results-summary"></p>
+          <ol class="site-list" id="results"></ol>
+          <div class="empty" id="results-empty" hidden></div>
+          <button type="button" class="btn more" id="results-more" hidden>더 보기</button>
+        </section>
+
+        <section class="export" aria-labelledby="export-title">
+          <h2 id="export-title">구글 지도로 가져가기</h2>
+          <p class="export-lede">유적을 KML 파일로 받아 <a href="https://www.google.com/maps/d/" target="_blank" rel="noopener">Google 내 지도</a>에서 새 지도 → 가져오기로 올리면 휴대폰 구글맵에서도 볼 수 있어요.</p>
+          <p class="export-scope" id="export-scope"></p>
+          <button type="button" class="btn" id="export-kml" data-needs-data disabled>KML 파일 받기</button>
+          <div class="status" id="export-status" role="status"></div>
+        </section>
+
+        <footer class="credits">
+          유적 데이터: <a href="https://pleiades.stoa.org" target="_blank" rel="noopener">Pleiades</a> (CC BY 3.0)<br>
+          사진·설명: <a href="https://www.wikidata.org" target="_blank" rel="noopener">Wikidata</a>, 위키백과, Wikimedia Commons (사진마다 저작자·라이선스 표시)
+        </footer>
+      </div>
+
+      <div class="view" id="view-detail" hidden>
+        <div class="detail-bar">
+          <button type="button" class="btn back" id="detail-back">← 목록으로</button>
         </div>
-        <div class="chips" id="chips"></div>
-        <label class="switch">
-          <input type="checkbox" id="visible-only">
-          <span class="switch-track" aria-hidden="true"></span>
-          <span>유적이 남아 있는 곳만</span>
-        </label>
-        <p class="hint">진한 점은 유적이 지금도 남아 있는 곳이에요.</p>
-      </section>
-
-      <section class="march" id="march" aria-label="하루 행군 반경">
-        <h2>하루 행군</h2>
-        <p class="march-lede" id="march-lede">로마 군단은 하루 20 로마마일을 걸었어요. 출발점을 정하면 그 안의 유적을 가까운 순으로 보여 드려요.</p>
-        <div class="march-actions" id="march-actions">
-          <button type="button" class="btn primary" id="march-pick">지도에서 출발점 고르기</button>
-          <button type="button" class="btn" id="march-here">내 위치에서 출발</button>
-        </div>
-        <p class="march-status" id="march-status" role="status"></p>
-        <ol class="near-list" id="near-list"></ol>
-      </section>
-
-      <section class="export" aria-label="구글 지도로 내보내기">
-        <h2>구글 지도로 가져가기</h2>
-        <p class="export-lede">지금 화면(행군 반경이 있으면 그 안)의 유적을 KML 파일로 받아 Google 내 지도에 올리면 휴대폰 구글맵에서도 볼 수 있어요.</p>
-        <button type="button" class="btn" id="export-kml">KML 파일 받기</button>
-        <p class="march-status" id="export-status" role="status"></p>
-      </section>
-
-      <footer class="credits">
-        유적 데이터: <a href="https://pleiades.stoa.org" target="_blank" rel="noopener">Pleiades</a> (CC BY 3.0)<br>
-        사진·설명: <a href="https://www.wikidata.org" target="_blank" rel="noopener">Wikidata</a>, 위키백과, Wikimedia Commons (사진마다 저작자·라이선스 표시)
-      </footer>
+        <article class="detail" id="detail" aria-labelledby="detail-name"></article>
+      </div>
     </div>
   </aside>
+
+  <div class="sr-only" id="live" aria-live="polite"></div>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
   <script src="/app.js"></script>

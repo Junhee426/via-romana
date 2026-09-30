@@ -1,0 +1,34 @@
+{
+  "_comment": "손으로 고른 한국어 별칭과 시작 지역. id는 data/processed/sites.geojson의 Pleiades ID이고, name은 그 ID의 원래 이름(검증용)이다. 서버가 시작할 때 id와 name이 맞는지 확인하고 틀린 항목은 버린다.",
+  "aliases": [
+    {"id": "285857974", "name": "Amphitheatrum Flavium", "ko": ["콜로세움", "콜로세오"]},
+    {"id": "458808506", "name": "Circus Maximus", "ko": ["키르쿠스 막시무스", "대전차 경기장"]},
+    {"id": "420615524", "name": "Thermae Diocletiani", "ko": ["디오클레티아누스 목욕장"]},
+    {"id": "423127", "name": "Villa Hadriani", "ko": ["하드리아누스 빌라"]},
+    {"id": "433032", "name": "Pompeii", "ko": ["폼페이"]},
+    {"id": "432873", "name": "Herculaneum", "ko": ["헤르쿨라네움", "에르콜라노"]},
+    {"id": "771445424", "name": "Roman amphitheater at Verona", "ko": ["베로나 아레나"]},
+    {"id": "149496", "name": "Pont du Gard", "ko": ["퐁 뒤 가르", "가르교"]},
+    {"id": "356648400", "name": "Arènes de Nîmes", "ko": ["님 원형경기장"]},
+    {"id": "353133531", "name": "Maison Carrée", "ko": ["메종 카레"]},
+    {"id": "438050385", "name": "Arles Amphitheatre", "ko": ["아를 원형경기장"]},
+    {"id": "28521919", "name": "Roman Theatre of Orange", "ko": ["오랑주 고대 극장"]},
+    {"id": "413823808", "name": "Triumphal Arch of Orange", "ko": ["오랑주 개선문"]},
+    {"id": "151157248", "name": "Porta Nigra", "ko": ["포르타 니그라"]},
+    {"id": "588236457", "name": "Roman amphitheater at Trier", "ko": ["트리어 원형경기장"]},
+    {"id": "79299", "name": "Aquae Sulis", "ko": ["바스 로마 목욕탕"]},
+    {"id": "237072", "name": "Segovia aqueduct", "ko": ["세고비아 수도교"]},
+    {"id": "683849730", "name": "Roman Theater at Mérida", "ko": ["메리다 로마 극장"]},
+    {"id": "834862588", "name": "Palace of Diocletian", "ko": ["디오클레티아누스 궁전"]},
+    {"id": "837713186", "name": "Pula Arena (Roman amphitheater)", "ko": ["풀라 아레나"]}
+  ],
+  "regions": [
+    {"key": "rome", "label": "로마", "center": [41.8925, 12.4853], "zoom": 13},
+    {"key": "naples", "label": "폼페이·나폴리만", "center": [40.78, 14.35], "zoom": 11},
+    {"key": "provence", "label": "프로방스 (님·아를·오랑주)", "center": [43.85, 4.6], "zoom": 9},
+    {"key": "trier", "label": "트리어", "center": [49.753, 6.641], "zoom": 13},
+    {"key": "split", "label": "스플리트·살로나", "center": [43.52, 16.46], "zoom": 12},
+    {"key": "merida", "label": "메리다", "center": [38.916, -6.338], "zoom": 14},
+    {"key": "bath", "label": "바스", "center": [51.381, -2.36], "zoom": 11}
+  ]
+}

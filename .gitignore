@@ -12,3 +12,8 @@ venv/
 .DS_Store
 .vscode/
 .idea/
+
+# 테스트
+tests/node_modules/
+tests/e2e/screenshots/
+.pytest_cache/

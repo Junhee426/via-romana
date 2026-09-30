@@ -1,0 +1,13 @@
+{
+  "name": "via-romana-tests",
+  "private": true,
+  "description": "브라우저 회귀 테스트. 외부 타일·위키 API는 모두 가짜 응답으로 대체한다.",
+  "type": "module",
+  "scripts": {
+    "e2e": "node e2e/run.mjs"
+  },
+  "devDependencies": {
+    "leaflet": "1.9.4",
+    "playwright": "1.56.1"
+  }
+}

@@ -1,0 +1,718 @@
+// via-romana 브라우저 회귀 테스트
+//
+//   cd tests && npm install && npm run e2e
+//
+// - 로컬 uvicorn을 띄우고 Chromium으로 연다 (VIA_PYTHON으로 파이썬 경로 지정 가능)
+// - Leaflet은 tests/node_modules에서, 지도 타일·글꼴·위키 API는 모두 가짜 응답으로 대체한다
+//   → 외부 서비스 장애와 상관없이 같은 결과가 나온다
+// - 스크린샷: tests/e2e/screenshots/
+// - 특정 테스트만: npm run e2e -- 검색어
+import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
+import { mkdirSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import assert from "node:assert/strict";
+
+const require = createRequire(import.meta.url);
+const { chromium } = require("playwright");
+const HERE = dirname(fileURLToPath(import.meta.url));
+const ROOT = join(HERE, "..", "..");
+const SHOTS = join(HERE, "screenshots");
+mkdirSync(SHOTS, { recursive: true });
+
+const LEAFLET_JS = readFileSync(require.resolve("leaflet/dist/leaflet.js"));
+const LEAFLET_CSS = readFileSync(require.resolve("leaflet/dist/leaflet.css"));
+const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkaPhfDwAE/wH+5dXYhwAAAABJRU5ErkJggg==", "base64");
+const PORT = 8790 + Math.floor(Math.random() * 100);
+const BASE = `http://127.0.0.1:${PORT}`;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const VIEWPORTS = {
+  desktop: { width: 1366, height: 768 },
+  mobile: { width: 390, height: 844 },
+  small: { width: 360, height: 800 },
+};
+
+// ── 서버 ────────────────────────────────────
+async function startServer() {
+  const py = process.env.VIA_PYTHON || "python3";
+  const proc = spawn(py, ["-m", "uvicorn", "app.main:app", "--port", String(PORT)], { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] });
+  let log = "";
+  proc.stdout.on("data", (d) => { log += d; });
+  proc.stderr.on("data", (d) => { log += d; });
+  for (let i = 0; i < 60; i++) {
+    try { if ((await fetch(`${BASE}/healthz`)).ok) return proc; } catch { /* 아직 */ }
+    await sleep(250);
+  }
+  proc.kill();
+  throw new Error(`서버가 뜨지 않았습니다:\n${log}`);
+}
+
+// ── 가짜 위키 응답 ───────────────────────────
+// opts.wiki: { photoFail, aboutFail, imageFail: 남은 실패 횟수, delay: { [wd]: ms }, noPhoto: Set<wd> }
+function wikiHandler(opts) {
+  const w = { photoFail: 0, aboutFail: 0, imageFail: 0, delay: {}, noPhoto: new Set(), calls: [], ...opts };
+  const json = (route, body, status = 200) => route.fulfill({
+    status, contentType: "application/json", headers: { "access-control-allow-origin": "*" }, body: JSON.stringify(body),
+  });
+  const handler = async (route) => {
+    const u = new URL(route.request().url());
+    const action = u.searchParams.get("action");
+    const wd = u.searchParams.get("ids") || u.searchParams.get("entity") || (u.pathname.match(/summary\/(Q\d+)/) || [])[1]
+      || (u.searchParams.get("titles") || "").match(/Q\d+/)?.[0] || (u.pathname.match(/Q\d+/) || [])[0];
+    w.calls.push(`${u.host}:${action || u.pathname.split("/").slice(0, 4).join("/")}:${wd}`);
+    if (w.delay[wd]) await sleep(w.delay[wd]);
+    if (u.host === "www.wikidata.org" && action === "wbgetentities") {
+      const labels = wd === "Q10285" ? { ko: { language: "ko", value: "콜로세움" } } : {};
+      const sitelinks = wd === "Q10285" ? { kowiki: { title: "콜로세움" } } : { enwiki: { title: wd } };
+      return json(route, { entities: { [wd]: { id: wd, labels, sitelinks } } });
+    }
+    if (u.host === "www.wikidata.org" && action === "wbgetclaims") {
+      if (w.noPhoto.has(wd)) return json(route, { claims: {} });
+      if (w.photoFail > 0) { w.photoFail--; return json(route, {}, 503); }
+      return json(route, { claims: { P18: [{ mainsnak: { datavalue: { value: `${wd}.jpg` } } }] } });
+    }
+    if (u.host === "commons.wikimedia.org") {
+      const file = u.searchParams.get("titles");
+      return json(route, { query: { pages: { 1: { title: file, imageinfo: [{
+        thumburl: `https://upload.wikimedia.org/fixture/${encodeURIComponent(file)}.png`,
+        descriptionurl: `https://commons.wikimedia.org/wiki/${encodeURIComponent(file)}`,
+        extmetadata: { Artist: { value: '<a href="//commons.wikimedia.org/wiki/User:Tester">Tester</a>' }, LicenseShortName: { value: "CC BY-SA 4.0" } },
+      }] } } } });
+    }
+    if (u.host.endsWith("wikipedia.org")) {
+      if (w.aboutFail > 0) { w.aboutFail--; return json(route, {}, 503); }
+      const title = decodeURIComponent(u.pathname.split("/").pop());
+      return json(route, { title, extract: `요약: ${title}`, content_urls: { desktop: { page: `https://${u.host}/wiki/${title}` } } });
+    }
+    if (u.host === "upload.wikimedia.org") {
+      if (w.imageFail > 0) { w.imageFail--; return route.fulfill({ status: 404, body: "" }); }
+      return route.fulfill({ contentType: "image/png", body: PNG });
+    }
+    return route.fulfill({ status: 404, body: "" });
+  };
+  return { w, handler };
+}
+
+// ── 페이지 ──────────────────────────────────
+async function openPage(browser, { viewport = "desktop", wiki = {}, reducedMotion = "no-preference", geolocation, permissions, beforeLoad, wait = true } = {}) {
+  const context = await browser.newContext({
+    viewport: VIEWPORTS[viewport] || viewport,
+    reducedMotion,
+    acceptDownloads: true,
+    geolocation,
+    permissions,
+    hasTouch: viewport !== "desktop",
+    isMobile: false,
+  });
+  const page = await context.newPage();
+  page.errors = [];
+  page.on("pageerror", (e) => page.errors.push(e.message));
+  await page.route("https://cdnjs.cloudflare.com/**", (r) => r.request().url().endsWith(".js")
+    ? r.fulfill({ contentType: "text/javascript", body: LEAFLET_JS })
+    : r.fulfill({ contentType: "text/css", body: LEAFLET_CSS }));
+  await page.route(/fonts\.(googleapis|gstatic)\.com/, (r) => r.fulfill({ contentType: "text/css", body: "" }));
+  await page.route(/cartocdn\.com|arcgisonline\.com|tile\.googleapis\.com/, (r) => r.fulfill({ contentType: "image/png", body: PNG }));
+  const { w, handler } = wikiHandler(wiki);
+  page.wiki = w;
+  await page.route(/wikidata\.org|wikipedia\.org|wikimedia\.org/, handler);
+  if (beforeLoad) await beforeLoad(page);
+  await page.goto(BASE + "/");
+  if (wait) await waitReady(page);
+  return page;
+}
+
+const waitReady = (page) => page.waitForFunction(() => document.body.dataset.phase === "ready", null, { timeout: 30000 });
+const text = (page, sel) => page.locator(sel).first().innerText();
+const dbg = (page, fn, arg) => page.evaluate(new Function("arg", `const d = window.viaRomanaDebug; return (${fn})(d, arg);`), arg);
+
+async function setView(page, lat, lon, zoom) {
+  await dbg(page, "(d, a) => d.map.setView([a.lat, a.lon], a.zoom, { animate: false })", { lat, lon, zoom });
+  await page.waitForTimeout(150);
+}
+async function pointFor(page, lat, lon) {
+  return dbg(page, `(d, a) => { const p = d.map.latLngToContainerPoint([a.lat, a.lon]); const r = d.map.getContainer().getBoundingClientRect(); return { x: p.x + r.left, y: p.y + r.top }; }`, { lat, lon });
+}
+async function matchedCount(page) {
+  const line = await text(page, "#count-line");
+  return Number(line.match(/조건 일치 ([\d,]+)곳/)[1].replace(/,/g, ""));
+}
+async function inViewCount(page) {
+  const line = await text(page, "#count-line");
+  return Number(line.match(/지도 범위 ([\d,]+)곳/)[1].replace(/,/g, ""));
+}
+async function openList(page) {
+  if ((await page.getAttribute("#panel", "data-state")) === "peek") await page.click("#panel-handle");
+  await page.waitForSelector("#view-list:not([hidden])");
+}
+async function openFilters(page) {
+  if (!(await page.$eval("#filters", (d) => d.open))) await page.click("#filters summary");
+}
+async function search(page, q) {
+  await page.fill("#search", q);
+  await page.press("#search", "Enter");
+  await page.waitForTimeout(250);
+}
+// /api/near 요청을 가로채 원하는 순서·지연으로 돌려준다
+async function controlNear(page, plan) {
+  const seen = [];
+  await page.route("**/api/near?*", async (route) => {
+    const i = seen.length;
+    seen.push(route.request().url());
+    const step = plan[i] || plan[plan.length - 1];
+    if (step.delay) await sleep(step.delay);
+    if (step.abort) return route.abort().catch(() => {});
+    await route.fulfill({ status: step.status || 200, contentType: "application/json", body: JSON.stringify(step.body) }).catch(() => {});
+  });
+  return seen;
+}
+const nearBody = (count, ids) => ({ center: [0, 0], km: 29.6, count, sites: ids.map((id, i) => ({ id, name: id, cat: "town", distance_km: i + 0.5 })) });
+
+// ── 테스트 ──────────────────────────────────
+const tests = [];
+const test = (name, fn) => tests.push({ name, fn });
+
+test("API: /healthz와 /api/meta 응답", async () => {
+  const h = await (await fetch(`${BASE}/healthz`)).json();
+  assert.equal(h.ok, true);
+  assert.equal(h.sites, 10580);
+  const m = await (await fetch(`${BASE}/api/meta`)).json();
+  assert.equal(m.day_march_km, 29.6);
+  assert.equal(m.regions.length, 7);
+  assert.equal(m.extent.length, 4);
+});
+
+test("초기 로딩 중에는 데이터 의존 버튼이 꺼져 있고 눌러도 오류가 없다", async (browser) => {
+  const page = await openPage(browser, {
+    wait: false,
+    beforeLoad: (p) => p.route("**/api/sites", async (r) => { await sleep(1500); await r.continue(); }),
+  });
+  await page.waitForSelector("body[data-phase=loading]");
+  for (const sel of ["#search", "#march-pick", "#march-here", "#export-kml", "#all-off"]) {
+    assert.equal(await page.isDisabled(sel), true, `${sel}은 로딩 중 비활성`);
+  }
+  await page.click("#march-pick", { force: true }).catch(() => {});
+  await page.click("#export-kml", { force: true }).catch(() => {});
+  assert.match(await text(page, "#count-line"), /불러오는 중/);
+  await waitReady(page);
+  assert.equal(await page.isDisabled("#search"), false);
+  assert.equal(await page.isVisible("#pick-banner"), false, "로딩 중 클릭으로 고르기 모드가 켜지면 안 됨");
+  assert.deepEqual(page.errors, []);
+});
+
+test("초기 실패 후 다시 시도: 오류 안내, 재시도, 마커·칩 중복 없음", async (browser) => {
+  let calls = 0;
+  const page = await openPage(browser, {
+    wait: false,
+    beforeLoad: (p) => p.route("**/api/sites", (r) => (++calls === 1 ? r.fulfill({ status: 500, body: "boom" }) : r.continue())),
+  });
+  await page.waitForSelector("#load-error:not([hidden])");
+  assert.match(await text(page, "#load-error-msg"), /다시 시도/);
+  assert.equal(await page.isDisabled("#search"), true);
+  await page.click("#retry");
+  await waitReady(page);
+  assert.equal(await page.isVisible("#load-error"), false);
+  assert.equal(await dbg(page, "(d) => d.state.sites.length"), 10580);
+  assert.equal(await dbg(page, "(d) => d.markerCount()"), 10580);
+  assert.equal(await page.locator(".chip").count(), 9);
+  assert.equal(await page.locator(".region").count(), 7);
+  // 칩 리스너가 한 번만 붙었는지: 한 번 누르면 꺼진다
+  await openFilters(page);
+  await page.click(".chip >> nth=0");
+  assert.equal(await page.getAttribute(".chip >> nth=0", "aria-pressed"), "false");
+  assert.deepEqual(page.errors, []);
+});
+
+test("배경 지도 실패는 유적 데이터 오류와 따로 안내한다", async (browser) => {
+  const page = await openPage(browser, {
+    beforeLoad: (p) => p.route(/cartocdn\.com/, (r) => r.fulfill({ status: 500, body: "" })),
+  });
+  await page.waitForSelector("#base-error:not([hidden])", { timeout: 8000 });
+  assert.equal(await page.isVisible("#load-error"), false);
+  assert.match(await text(page, "#count-line"), /조건 일치 10,580곳/);
+  await page.click("#base-switch");
+  assert.equal(await page.getAttribute('.basemap [data-base="sat"]', "aria-pressed"), "true");
+});
+
+test("행군: A가 B보다 늦게 도착해도 B 결과가 남는다", async (browser) => {
+  const page = await openPage(browser);
+  const seen = await controlNear(page, [
+    { delay: 1500, body: nearBody(111, ["285857974"]) },
+    { delay: 0, body: nearBody(2, ["149496", "353133531"]) },
+  ]);
+  await setView(page, 43.9, 4.5, 9);
+  await page.click("#march-pick");
+  let p = await pointFor(page, 43.95, 4.4);
+  await page.mouse.click(p.x, p.y);
+  await page.waitForTimeout(100);
+  await page.click("#march-pick");
+  p = await pointFor(page, 43.9, 4.6);
+  await page.mouse.click(p.x, p.y);
+  await page.waitForTimeout(2000);
+  assert.equal(seen.length, 2);
+  assert.match(await text(page, "#march-status"), /유적 2곳/);
+  assert.match(await text(page, "#results-summary"), /행군 반경 · 2곳/);
+  const ids = await page.$$eval("#results .site-row", (els) => els.map((e) => e.dataset.id));
+  assert.deepEqual(ids, ["149496", "353133531"]);
+  assert.equal(await dbg(page, "(d) => d.marchLayerCount()"), 2, "반경 원과 출발점만 남음");
+});
+
+test("행군 조회 중 반경을 지우면 늦은 응답이 결과를 되살리지 않는다", async (browser) => {
+  const page = await openPage(browser);
+  await controlNear(page, [{ delay: 1200, body: nearBody(50, ["285857974"]) }]);
+  await setView(page, 41.89, 12.49, 11);
+  await page.click("#march-pick");
+  await page.click("#pick-center");
+  await page.waitForSelector("#march-clear:not([hidden])");
+  await page.click("#march-clear");
+  await page.waitForTimeout(1600);
+  assert.equal(await dbg(page, "(d) => d.state.march"), null);
+  assert.equal(await page.isVisible('.scope [data-scope="march"]'), false);
+  assert.equal(await text(page, "#march-status").catch(() => ""), "");
+  assert.doesNotMatch(await text(page, "#results-summary"), /행군/);
+});
+
+test("행군 조회 중 모든 분류를 끄면 늦은 응답이 결과를 덮지 않는다", async (browser) => {
+  const page = await openPage(browser);
+  const seen = await controlNear(page, [{ delay: 1200, body: nearBody(50, ["285857974"]) }]);
+  await setView(page, 41.89, 12.49, 11);
+  await page.click("#march-pick");
+  await page.click("#pick-center");
+  await page.waitForTimeout(100);
+  await openFilters(page);
+  await page.click("#all-off");
+  await page.waitForTimeout(1600);
+  assert.equal(seen.length, 1, "분류가 없으면 API를 부르지 않는다 (cat 생략 = 전체로 오해 방지)");
+  assert.match(await text(page, "#march-status"), /모든 분류가 꺼져/);
+  assert.equal(await page.locator("#results .site-row").count(), 0);
+  assert.match(await text(page, "#results-empty"), /모든 분류가 꺼져/);
+  assert.equal(await dbg(page, "(d) => d.markerCount()"), 0);
+  await page.click('#results-empty [data-fix="cats-on"]');
+  await page.waitForTimeout(1500);
+  assert.equal(seen.length, 2);
+});
+
+test("지도를 옮기면 지도 범위 건수와 목록이 함께 바뀐다", async (browser) => {
+  const page = await openPage(browser);
+  const total = await matchedCount(page);
+  await setView(page, 41.8925, 12.4853, 13);
+  const rome = await inViewCount(page);
+  const romeFirst = await page.getAttribute("#results .site-row >> nth=0", "data-id");
+  await setView(page, 49.753, 6.641, 13);
+  const trier = await inViewCount(page);
+  const trierFirst = await page.getAttribute("#results .site-row >> nth=0", "data-id");
+  assert.equal(await matchedCount(page), total, "전체 조건 일치 건수는 지도 이동과 무관");
+  assert.ok(rome > 0 && trier > 0 && rome !== trier, `로마 ${rome}, 트리어 ${trier}`);
+  assert.notEqual(romeFirst, trierFirst);
+  assert.match(await text(page, "#results-summary"), new RegExp(`지금 지도 범위 · ${trier.toLocaleString("en")}곳`));
+  const inside = await dbg(page, "(d, id) => { const s = d.state.byId.get(id); return d.map.getBounds().contains([s.coordinates[1], s.coordinates[0]]); }", trierFirst);
+  assert.equal(inside, true);
+});
+
+test("검색: 서버와 같은 기준으로 세고, 악센트·대소문자·한국어 별칭을 처리한다", async (browser) => {
+  const page = await openPage(browser);
+  for (const q of ["nimes", "NÎMES", "콜로세움", "Pont du Gard", "  aqua   ", "theat verona"]) {
+    await search(page, q);
+    const server = (await (await fetch(`${BASE}/api/sites?q=${encodeURIComponent(q)}`)).json()).features.length;
+    assert.equal(await matchedCount(page), server, `‘${q}’ 건수`);
+    assert.ok(server > 0, `‘${q}’ 결과 있음`);
+  }
+  await search(page, "콜로세움");
+  assert.equal(await page.getAttribute('.scope [data-scope="all"]', "aria-pressed"), "true", "검색하면 전체 범위");
+  assert.equal(await page.getAttribute("#results .site-row >> nth=0", "data-id"), "285857974");
+  await search(page, "arena");
+  const top = await page.$$eval("#results .site-row .name", (els) => els.slice(0, 2).map((e) => e.textContent));
+  assert.ok(top.some((n) => /Pula Arena/.test(n)), `단어 시작 일치가 앞에: ${top}`);
+  await search(page, "zzzz없는이름");
+  assert.match(await text(page, "#results-empty"), /맞는 유적이 없어요/);
+  await page.click('#results-empty [data-fix="clear-q"]');
+  assert.equal(await page.inputValue("#search"), "");
+  assert.equal(await matchedCount(page), 10580);
+});
+
+test("검색·목록·지도 선택이 같은 유적을 가리키고, 같은 항목을 다시 골라도 열린다", async (browser) => {
+  const page = await openPage(browser);
+  const zoomBefore = await dbg(page, "(d) => d.map.getZoom()");
+  await search(page, "Pont du Gard");
+  assert.equal(await dbg(page, "(d) => d.map.getZoom()"), zoomBefore, "검색만으로 지도를 옮기지 않는다");
+  await page.click('#results .site-row[data-id="149496"]');
+  await page.waitForSelector("#view-detail:not([hidden])");
+  assert.equal(await text(page, "#detail-name"), "Pont du Gard");
+  assert.equal(await dbg(page, "(d) => d.state.selectedId"), "149496");
+  await page.waitForTimeout(400);
+  const inside = await dbg(page, "(d) => d.map.getBounds().contains([43.94725, 4.53529])");
+  assert.equal(inside, true, "선택한 유적이 지도에 보인다");
+  await page.click("#detail-back");
+  assert.equal(await page.getAttribute('#results .site-row[data-id="149496"]', "aria-current"), "true");
+  // 같은 위치·같은 줌에서 같은 항목 다시 선택
+  await page.click('#results .site-row[data-id="149496"]');
+  await page.waitForSelector("#view-detail:not([hidden])");
+  assert.equal(await text(page, "#detail-name"), "Pont du Gard");
+  // 빠른 연속 선택: 마지막으로 고른 유적이 남는다
+  await page.click("#detail-back");
+  await search(page, "amphitheat");
+  const ids = await page.$$eval("#results .site-row", (els) => els.slice(0, 3).map((e) => e.dataset.id));
+  for (const id of ids) {
+    await page.click(`#results .site-row[data-id="${id}"]`, { noWaitAfter: true });
+    if (id !== ids[ids.length - 1]) await page.click("#detail-back");
+  }
+  await page.waitForTimeout(800);
+  assert.equal(await dbg(page, "(d) => d.state.selectedId"), ids[2]);
+  const name = await dbg(page, "(d, id) => d.state.byId.get(id).name", ids[2]);
+  assert.equal(await text(page, "#detail-name"), name);
+  // 지도 마커를 눌러도 같은 상세가 열린다
+  await page.click("#detail-back");
+  await page.fill("#search", "");
+  await page.press("#search", "Enter");
+  await setView(page, 41.89025, 12.49235, 17);
+  const p = await pointFor(page, 41.89025, 12.49235);
+  await page.mouse.click(p.x, p.y);
+  await page.waitForSelector("#view-detail:not([hidden])");
+  assert.equal(await text(page, "#detail-name"), "Amphitheatrum Flavium");
+  assert.deepEqual(page.errors, []);
+});
+
+test("목록이 많으면 더 보기로 이어서 보여 준다", async (browser) => {
+  const page = await openPage(browser);
+  await page.click('.scope [data-scope="all"]');
+  assert.equal(await page.locator("#results .site-row").count(), 50);
+  assert.match(await text(page, "#results-more"), /10,530곳 남음/);
+  await page.click("#results-more");
+  assert.equal(await page.locator("#results .site-row").count(), 100);
+  assert.equal(await page.evaluate(() => document.activeElement.dataset.id != null), true, "새 항목으로 포커스");
+});
+
+test("모바일: 목록 → 상세 → 목록에서 스크롤·검색·필터가 유지된다", async (browser) => {
+  const page = await openPage(browser, { viewport: "mobile" });
+  assert.equal(await page.getAttribute("#panel", "data-state"), "peek");
+  await search(page, "villa");
+  assert.equal(await page.getAttribute("#panel", "data-state"), "list");
+  await page.click("#filters summary");
+  await page.click(".switch");
+  await page.click("#filters summary");
+  await page.click("#results-more").catch(() => {});
+  await page.evaluate(() => { document.getElementById("panel-main").scrollTop = 900; });
+  const before = await page.evaluate(() => document.getElementById("panel-main").scrollTop);
+  const row = page.locator("#results .site-row").nth(12);
+  const id = await row.getAttribute("data-id");
+  await row.click();
+  await page.waitForSelector("#view-detail:not([hidden])");
+  assert.equal(await page.getAttribute("#panel", "data-state"), "detail");
+  await page.screenshot({ path: join(SHOTS, "mobile-detail.png") });
+  await page.click("#detail-back");
+  assert.equal(await page.getAttribute("#panel", "data-state"), "list");
+  const after = await page.evaluate(() => document.getElementById("panel-main").scrollTop);
+  assert.ok(Math.abs(after - before) < 5, `스크롤 ${before} → ${after}`);
+  assert.equal(await page.inputValue("#search"), "villa");
+  assert.equal(await page.isChecked("#visible-only"), true);
+  assert.equal(await page.evaluate(() => document.activeElement.dataset.id), id, "고른 항목으로 포커스 복귀");
+  await page.screenshot({ path: join(SHOTS, "mobile-list.png") });
+});
+
+test("모바일: 출발점 고르기 중에는 시트를 접어도 취소가 보이고 Escape로도 취소된다", async (browser) => {
+  const page = await openPage(browser, { viewport: "mobile" });
+  await openList(page);
+  await page.click("#march-pick");
+  assert.equal(await page.getAttribute("#panel", "data-state"), "peek");
+  assert.equal(await page.isVisible("#pick-cancel"), true);
+  const colors = await page.$eval("#pick-center", (b) => [getComputedStyle(b).color, getComputedStyle(b.parentElement.parentElement).backgroundColor]);
+  assert.notEqual(colors[0], colors[1], "지도 중심 버튼 글자가 배경과 구분된다");
+  const box = await page.locator("#pick-cancel").boundingBox();
+  assert.ok(box.height >= 44 && box.y > 0 && box.y + box.height < 844, "취소 버튼이 화면 안에 44px 이상");
+  await page.screenshot({ path: join(SHOTS, "mobile-picking.png") });
+  await page.keyboard.press("Escape");
+  assert.equal(await page.isVisible("#pick-banner"), false);
+  assert.equal(await dbg(page, "(d) => d.state.picking"), false);
+  await openList(page);
+  await page.click("#march-pick");
+  await page.click("#pick-cancel");
+  assert.equal(await dbg(page, "(d) => d.state.picking"), false);
+  await openList(page);
+  await setView(page, 41.8925, 12.4853, 11);
+  await page.click("#march-pick");
+  await page.click("#pick-center");
+  await page.waitForFunction(() => window.viaRomanaDebug.state.march?.status === "ready");
+  assert.match(await text(page, "#count-sub"), /행군 반경 안 [\d,]+곳/);
+});
+
+test("사진과 설명은 따로 실패하고 따로 다시 시도한다", async (browser) => {
+  const page = await openPage(browser, { wiki: { photoFail: 1 } });
+  await search(page, "콜로세움");
+  await page.click('#results .site-row[data-id="285857974"]');
+  await page.waitForSelector("#photo-retry");
+  assert.match(await text(page, "#d-about"), /요약: 콜로세움/, "설명은 사진 실패와 무관하게 보인다");
+  assert.match(await text(page, "#d-label"), /콜로세움/);
+  await page.click("#photo-retry");
+  await page.waitForSelector("#d-photo img");
+  assert.match(await text(page, "#d-photo .credit"), /Tester, CC BY-SA 4.0/);
+
+  const page2 = await openPage(browser, { wiki: { aboutFail: 1 } });
+  await search(page2, "Pont du Gard");
+  await page2.click('#results .site-row[data-id="149496"]');
+  await page2.waitForSelector("#about-retry");
+  await page2.waitForSelector("#d-photo img");
+  await page2.click("#about-retry");
+  await page2.waitForSelector("#d-about .d-about-text");
+  assert.match(await text(page2, "#d-about"), /요약: Q189764/);
+});
+
+test("사진 파일 자체를 못 받으면 오류와 다시 시도를 보여 준다", async (browser) => {
+  const page = await openPage(browser, { wiki: { imageFail: 1 } });
+  await search(page, "Pont du Gard");
+  await page.click('#results .site-row[data-id="149496"]');
+  await page.waitForSelector("#photo-retry");
+  await page.click("#photo-retry");
+  await page.waitForSelector("#d-photo img");
+  assert.equal(await page.$eval("#d-photo img", (i) => i.complete && i.naturalWidth > 0), true);
+});
+
+test("다른 유적으로 옮긴 뒤 도착한 이전 유적의 사진·설명은 현재 상세를 바꾸지 않는다", async (browser) => {
+  const page = await openPage(browser, { wiki: { delay: { Q189764: 1200 } } });
+  await search(page, "Pont du Gard");
+  await page.click('#results .site-row[data-id="149496"]');
+  await page.click("#detail-back");
+  await search(page, "콜로세움");
+  await page.click('#results .site-row[data-id="285857974"]');
+  await page.waitForTimeout(1600);
+  assert.equal(await text(page, "#detail-name"), "Amphitheatrum Flavium");
+  assert.doesNotMatch(await text(page, "#d-about"), /Q189764/);
+  assert.match(await page.getAttribute("#d-photo img", "src"), /Q10285/);
+  // 같은 유적을 다시 열면 캐시를 쓴다 (중복 요청 없음)
+  const before = page.wiki.calls.length;
+  await page.click("#detail-back");
+  await page.click('#results .site-row[data-id="285857974"]');
+  await page.waitForTimeout(300);
+  assert.equal(page.wiki.calls.filter((c) => !c.startsWith("upload")).length, page.wiki.calls.slice(0, before).filter((c) => !c.startsWith("upload")).length);
+});
+
+test("Wikidata가 없는 유적은 사진·설명이 없다고 알리고 Pleiades 설명을 보여 준다", async (browser) => {
+  const page = await openPage(browser);
+  await search(page, "Segovia aqueduct");
+  await page.click('#results .site-row[data-id="237072"]');
+  await page.waitForSelector("#view-detail:not([hidden])");
+  assert.match(await text(page, "#d-photo"), /연결된 사진 자료가 없어요/);
+  assert.equal(page.wiki.calls.length, 0);
+});
+
+test("KML: 정상 다운로드, 범위·필터 표시", async (browser) => {
+  const page = await openPage(browser);
+  await setView(page, 41.8925, 12.4853, 14);
+  await search(page, "theat");
+  await page.click('.scope [data-scope="view"]');
+  const scopeText = await text(page, "#export-scope");
+  assert.match(scopeText, /지금 지도 범위 · 검색어 ‘theat’, 모든 분류 적용 · \d+곳/);
+  const [download] = await Promise.all([page.waitForEvent("download"), page.click("#export-kml")]);
+  assert.equal(download.suggestedFilename(), "via-romana.kml");
+  const body = readFileSync(await download.path(), "utf8");
+  assert.ok(body.startsWith("<?xml") && body.includes("<kml"));
+  const n = Number(scopeText.match(/(\d+)곳/)[1]);
+  assert.equal((body.match(/<Placemark>/g) || []).length, n, "화면에 적힌 건수와 파일 건수가 같다");
+  assert.match(await text(page, "#export-status"), /다운로드를 시작했어요/);
+});
+
+test("KML: 0건·상한 초과·분류 없음은 요청 없이 안내한다", async (browser) => {
+  const page = await openPage(browser);
+  let requests = 0;
+  await page.route("**/api/export.kml?*", (r) => { requests++; return r.continue(); });
+  await page.click("#export-kml");
+  assert.match(await text(page, "#export-status"), /2,000곳까지/);
+  await setView(page, 36.0, -30.0, 9);   // 대서양
+  await page.click("#export-kml");
+  assert.match(await text(page, "#export-status"), /조건에 맞는 유적이 없어요/);
+  assert.match(await text(page, "#results-empty"), /데이터 범위\(유럽의 로마 유적\) 밖/);
+  await setView(page, 41.8925, 12.4853, 14);
+  await openFilters(page);
+  await page.click("#all-off");
+  await page.click("#export-kml");
+  assert.match(await text(page, "#export-status"), /모든 분류가 꺼져/);
+  assert.equal(requests, 0);
+});
+
+test("KML: 서버 오류·네트워크 오류·404는 파일을 저장하지 않고 다시 시도를 준다, 중복 클릭 방지", async (browser) => {
+  const page = await openPage(browser);
+  await setView(page, 41.8925, 12.4853, 14);
+  let downloads = 0;
+  page.on("download", () => downloads++);
+  let mode = "500";
+  let requests = 0;
+  await page.route("**/api/export.kml?*", async (r) => {
+    requests++;
+    if (mode === "slow") { await sleep(800); return r.continue(); }
+    if (mode === "500") return r.fulfill({ status: 500, contentType: "text/html", body: "<h1>error</h1>" });
+    if (mode === "404") return r.fulfill({ status: 404, contentType: "application/json", body: '{"detail":"조건에 맞는 유적이 없습니다"}' });
+    return r.abort();
+  });
+  await page.click("#export-kml");
+  await page.waitForSelector("#export-status [data-export-retry]");
+  assert.match(await text(page, "#export-status"), /서버 오류\(500\)/);
+  mode = "net";
+  await page.click("#export-status [data-export-retry]");
+  await page.waitForFunction(() => /네트워크 오류/.test(document.getElementById("export-status").textContent));
+  mode = "404";
+  await page.click("#export-kml");
+  await page.waitForFunction(() => /조건에 맞는 유적이 없어요/.test(document.getElementById("export-status").textContent));
+  assert.equal(downloads, 0);
+  assert.ok(page.url().endsWith("/"), "지도 페이지에 그대로 있다");
+  mode = "slow";
+  requests = 0;
+  await page.click("#export-kml");
+  await page.click("#export-kml", { force: true, timeout: 1000 }).catch(() => {});
+  await page.waitForEvent("download");
+  assert.equal(requests, 1);
+});
+
+test("위치: 권한 거부·시간 초과·범위 밖·범위 안", async (browser) => {
+  const fake = (mode) => (p) => p.addInitScript((m) => {
+    navigator.geolocation.getCurrentPosition = (ok, fail) => setTimeout(() => {
+      if (m === "denied") fail({ code: 1 });
+      else if (m === "timeout") fail({ code: 3 });
+      else if (m === "unavailable") fail({ code: 2 });
+      else if (m === "seoul") ok({ coords: { latitude: 37.57, longitude: 126.98 } });
+      else if (m === "istanbul-far") ok({ coords: { latitude: 39.9, longitude: 32.85 } });
+      else ok({ coords: { latitude: 41.8925, longitude: 12.4853 } });
+    }, m === "rome-slow" ? 800 : 50);
+  }, mode);
+  const expect = { denied: /권한이 거부/, timeout: /시간이 초과/, unavailable: /확인하지 못했어요/, seoul: /데이터 범위\(유럽의 로마 유적\) 밖/, "istanbul-far": /데이터 범위/ };
+  for (const [mode, re] of Object.entries(expect)) {
+    const page = await openPage(browser, { beforeLoad: fake(mode) });
+    await page.click("#march-here");
+    await page.waitForFunction((src) => new RegExp(src).test(document.getElementById("march-status").textContent), re.source);
+    assert.equal(await dbg(page, "(d) => d.state.march"), null, `${mode}: 행군을 시작하지 않는다`);
+    await page.waitForTimeout(50);
+    if (mode === "timeout") assert.equal(await page.isVisible("#locate-retry"), true);
+    assert.doesNotMatch(await text(page, "#march-status"), /유적이 없/, "로마 유적이 없다고 단정하지 않는다");
+  }
+  const page = await openPage(browser, { beforeLoad: fake("rome") });
+  await page.click("#march-here");
+  await page.waitForFunction(() => window.viaRomanaDebug.state.march?.status === "ready");
+  // 늦게 온 위치 콜백은 다른 행동(고르기 시작) 뒤에 무시된다
+  const late = await openPage(browser, { beforeLoad: fake("rome-slow") });
+  await late.click("#march-here");
+  await late.click("#march-pick");
+  await late.waitForTimeout(1200);
+  assert.equal(await dbg(late, "(d) => d.state.march === null"), true);
+  assert.equal(await dbg(late, "(d) => d.state.picking"), true, "고르기 모드가 유지된다");
+});
+
+test("이곳 주변 탐색: 상세에서 행군 반경 목록으로 이어진다", async (browser) => {
+  const page = await openPage(browser);
+  await search(page, "콜로세움");
+  await page.click('#results .site-row[data-id="285857974"]');
+  await page.click("#d-explore");
+  await page.waitForFunction(() => window.viaRomanaDebug.state.march?.status === "ready");
+  assert.equal(await page.getAttribute('.scope [data-scope="march"]', "aria-pressed"), "true");
+  assert.match(await text(page, "#results-summary"), /행군 반경에서 ‘콜로세움’ 검색/);
+  // 검색어를 지우면 반경 안 전체로 다시 조회
+  await page.click("#search-clear");
+  await page.waitForFunction(() => window.viaRomanaDebug.state.march?.result?.count > 100);
+  assert.match(await text(page, "#results .site-row >> nth=0 >> .dist"), /출발점에서 0\.0km/);
+});
+
+test("키보드만으로: 검색 → 목록 → 상세 → 주변 탐색 → 목록 복귀, 고르기 취소", async (browser) => {
+  const page = await openPage(browser);
+  const tabTo = async (pred, limit = 60) => {
+    for (let i = 0; i < limit; i++) {
+      await page.keyboard.press("Tab");
+      if (await page.evaluate(pred)) return;
+    }
+    throw new Error(`Tab으로 도달 못 함: ${pred}`);
+  };
+  await tabTo(() => document.activeElement.id === "search");
+  await page.keyboard.type("pont du gard");
+  await page.keyboard.press("Enter");
+  await tabTo(() => document.activeElement.classList.contains("site-row"));
+  await page.keyboard.press("Enter");
+  await page.waitForSelector("#view-detail:not([hidden])");
+  assert.equal(await page.evaluate(() => document.activeElement.id), "detail-name");
+  await page.keyboard.press("Escape");
+  assert.equal(await page.evaluate(() => document.activeElement.dataset.id), "149496");
+  await page.keyboard.press("Enter");
+  await tabTo(() => document.activeElement.id === "d-explore");
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => window.viaRomanaDebug.state.march?.status === "ready");
+  await page.focus("#march-pick");
+  await page.keyboard.press("Enter");
+  assert.equal(await page.evaluate(() => document.activeElement.id), "pick-cancel");
+  await page.keyboard.press("Escape");
+  assert.equal(await dbg(page, "(d) => d.state.picking"), false);
+  assert.equal(await page.evaluate(() => document.activeElement.id), "march-pick");
+});
+
+test("reduced-motion이면 지도 이동 애니메이션을 끈다", async (browser) => {
+  const page = await openPage(browser, { reducedMotion: "reduce" });
+  assert.equal(await dbg(page, "(d) => d.map.options.zoomAnimation"), false);
+  await page.click(".region >> nth=0");
+  assert.equal(await dbg(page, "(d) => d.map.getZoom()"), 13, "애니메이션 없이 바로 이동");
+});
+
+test("시작 지역마다 실제 유적이 있다", async (browser) => {
+  const page = await openPage(browser);
+  const n = await page.locator(".region").count();
+  for (let i = 0; i < n; i++) {
+    await page.click(`.region >> nth=${i}`);
+    await page.waitForTimeout(700);
+    const label = await page.locator(".region").nth(i).innerText();
+    assert.ok(await inViewCount(page) >= 10, `${label}: 지도 범위 안 유적 ${await inViewCount(page)}곳`);
+  }
+});
+
+for (const [vp, size] of Object.entries(VIEWPORTS)) {
+  test(`레이아웃 ${size.width}×${size.height}: 가로 스크롤 없음, 주요 버튼 44px, 캡처`, async (browser) => {
+    const page = await openPage(browser, { viewport: vp });
+    await page.screenshot({ path: join(SHOTS, `${vp}-start.png`) });
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - innerWidth);
+    assert.ok(overflow <= 0, `가로 넘침 ${overflow}px`);
+    await openList(page);
+    await search(page, "arena");
+    const small = await page.$$eval("#search, .region, .btn:not([hidden]), .site-row, .panel-handle, .link",
+      (els) => els.filter((e) => e.offsetParent && e.getBoundingClientRect().height < 44)
+        .map((e) => `${e.id || e.className}:${Math.round(e.getBoundingClientRect().height)}`));
+    assert.deepEqual(small, []);
+    await page.screenshot({ path: join(SHOTS, `${vp}-list.png`) });
+    await page.click("#results .site-row >> nth=0");
+    await page.waitForSelector("#view-detail:not([hidden])");
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: join(SHOTS, `${vp}-detail.png`) });
+    assert.ok(await page.locator("#d-explore").isVisible());
+    assert.deepEqual(page.errors, []);
+  });
+}
+
+test("성능: 필터 변경·줌 변경 처리 시간 측정", async (browser) => {
+  const page = await openPage(browser);
+  const t = await page.evaluate(async () => {
+    const d = window.viaRomanaDebug;
+    const time = async (fn) => { const t0 = performance.now(); await fn(); return Math.round(performance.now() - t0); };
+    const chip = document.querySelector(".chip");
+    const off = await time(() => chip.click());
+    const on = await time(() => chip.click());
+    const zoom = await time(() => d.map.setZoom(7, { animate: false }));
+    const zoomSameBucket = await time(() => d.map.setZoom(8, { animate: false }));
+    return { off, on, zoom, zoomSameBucket };
+  });
+  console.log("    측정(ms):", JSON.stringify(t));
+});
+
+// ── 실행 ────────────────────────────────────
+const only = process.argv.slice(2).join(" ");
+const server = await startServer();
+const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || undefined });
+let failed = 0;
+for (const t of tests) {
+  if (only && !t.name.includes(only)) continue;
+  const t0 = Date.now();
+  try {
+    await t.fn(browser);
+    console.log(`✓ ${t.name} (${Date.now() - t0}ms)`);
+  } catch (err) {
+    failed++;
+    console.log(`✗ ${t.name}\n    ${String(err.stack || err).split("\n").slice(0, 9).join("\n    ")}`);
+  } finally {
+    for (const ctx of browser.contexts()) await ctx.close();
+  }
+}
+await browser.close();
+server.kill();
+console.log(failed ? `\n실패 ${failed}건` : "\n모두 통과");
+process.exit(failed ? 1 : 0);
