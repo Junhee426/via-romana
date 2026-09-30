@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+     viewBox="0 0 24 24"
+     fill="currentColor"
+     aria-hidden="true">
+  <path d="M6 21V9c0-4 2.5-6.5 6-6.5S18 5 18 9v12H6Z"/>
+  <path d="M9 10h6v2H9v-2Z" fill="white" fill-opacity=".7"/>
+  <path d="M9.8 14h4.4v1.6H9.8V14Z" fill="white" fill-opacity=".7"/>
+  <path d="M10.5 17.3h3v1.4h-3v-1.4Z" fill="white" fill-opacity=".7"/>
+</svg>

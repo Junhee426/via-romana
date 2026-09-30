@@ -26,7 +26,7 @@
     {"key": "rome", "label": "로마", "center": [41.8925, 12.4853], "zoom": 13},
     {"key": "naples", "label": "폼페이·나폴리만", "center": [40.78, 14.35], "zoom": 11},
     {"key": "provence", "label": "프로방스 (님·아를·오랑주)", "center": [43.85, 4.6], "zoom": 9},
-    {"key": "trier", "label": "트리어", "center": [49.753, 6.641], "zoom": 13},
+    {"key": "trier", "label": "트리어", "center": [49.753, 6.641], "zoom": 12},
     {"key": "split", "label": "스플리트·살로나", "center": [43.52, 16.46], "zoom": 12},
     {"key": "merida", "label": "메리다", "center": [38.916, -6.338], "zoom": 14},
     {"key": "bath", "label": "바스", "center": [51.381, -2.36], "zoom": 11}

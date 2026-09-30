@@ -16,7 +16,7 @@
   <div id="map" role="region" aria-label="로마 유적 지도"></div>
 
   <header class="topbar">
-    <h1 class="wordmark">Via Romana</h1>
+    <h1 class="wordmark">Via Romana<span class="tagline">Explore the Roman World</span></h1>
     <form class="search" id="search-form" role="search" autocomplete="off">
       <label class="sr-only" for="search">유적 검색</label>
       <input id="search" type="search" placeholder="유적 검색 (예: 콜로세움, Pont du Gard)"
@@ -24,7 +24,8 @@
       <button type="button" class="search-clear" id="search-clear" aria-label="검색어 지우기" hidden>×</button>
     </form>
     <div class="basemap" role="group" aria-label="배경 지도">
-      <button type="button" data-base="map" aria-pressed="true">지도</button>
+      <button type="button" data-base="roman" aria-pressed="true" title="현대 지명을 뺀 양피지 톤 지도">로마</button>
+      <button type="button" data-base="map" aria-pressed="false">지도</button>
       <button type="button" data-base="sat" aria-pressed="false">위성</button>
     </div>
   </header>
@@ -65,6 +66,23 @@
 
     <div class="panel-main" id="panel-main">
       <div class="view" id="view-list">
+        <details class="legend" id="legend">
+          <summary>
+            <span>범례</span>
+            <span class="legend-peek" id="legend-peek" aria-hidden="true"></span>
+          </summary>
+          <ul class="legend-list" id="legend-list"></ul>
+          <p class="legend-note">모양이 분류를 알려 줘요. 색을 구분하기 어려워도 아이콘 모양으로 알아볼 수 있어요. 진한 아이콘은 유적이 남아 있는 곳, 흐린 아이콘은 남은 정도 정보가 없거나 지표에서 보이지 않는 곳이에요.</p>
+          <h3 class="legend-h">확대 단계</h3>
+          <ol class="lod-steps">
+            <li data-mode="density"><span class="lod-sample density" aria-hidden="true"></span><span>유럽 전체 · 유적이 모인 정도</span></li>
+            <li data-mode="glyph"><span class="lod-sample" id="lod-glyph-sample" aria-hidden="true"></span><span>지역 · 분류별 채움형 아이콘</span></li>
+            <li data-mode="outline"><span class="lod-sample" id="lod-outline-sample" aria-hidden="true"></span><span>도시 · 자세한 윤곽 아이콘</span></li>
+            <li data-mode="outline-label"><span class="lod-sample label" aria-hidden="true">Aa</span><span>유적 · 윤곽 아이콘과 주요 이름</span></li>
+          </ol>
+          <p class="lod-now" id="lod-now"></p>
+        </details>
+
         <details class="filters" id="filters">
           <summary>
             <span>분류·유적 상태</span>
@@ -138,6 +156,8 @@
   <div class="sr-only" id="live" aria-live="polite"></div>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+  <script src="/js/icons.js"></script>
+  <script src="/js/canvas-layer.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

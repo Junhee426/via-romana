@@ -13,6 +13,7 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
+import { iconReport, MAX_IOU } from "./icons.mjs";
 
 const require = createRequire(import.meta.url);
 const { chromium } = require("playwright");
@@ -23,6 +24,8 @@ mkdirSync(SHOTS, { recursive: true });
 
 const LEAFLET_JS = readFileSync(require.resolve("leaflet/dist/leaflet.js"));
 const LEAFLET_CSS = readFileSync(require.resolve("leaflet/dist/leaflet.css"));
+// 지도 타일 대신 쓰는 옅은 양피지 격자 (캡처가 실제 배경 톤과 비슷하게 보이도록)
+const TILE = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256"><rect width="256" height="256" fill="#f3f1ec"/><path d="M0 128h256M128 0v256" stroke="#e2ded5"/></svg>');
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkaPhfDwAE/wH+5dXYhwAAAABJRU5ErkJggg==", "base64");
 const PORT = 8790 + Math.floor(Math.random() * 100);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -30,6 +33,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const VIEWPORTS = {
   desktop: { width: 1366, height: 768 },
+  wide: { width: 1920, height: 1080 },
   mobile: { width: 390, height: 844 },
   small: { width: 360, height: 800 },
 };
@@ -113,7 +117,7 @@ async function openPage(browser, { viewport = "desktop", wiki = {}, reducedMotio
     ? r.fulfill({ contentType: "text/javascript", body: LEAFLET_JS })
     : r.fulfill({ contentType: "text/css", body: LEAFLET_CSS }));
   await page.route(/fonts\.(googleapis|gstatic)\.com/, (r) => r.fulfill({ contentType: "text/css", body: "" }));
-  await page.route(/cartocdn\.com|arcgisonline\.com|tile\.googleapis\.com/, (r) => r.fulfill({ contentType: "image/png", body: PNG }));
+  await page.route(/cartocdn\.com|arcgisonline\.com|tile\.googleapis\.com/, (r) => r.fulfill({ contentType: "image/svg+xml", body: TILE }));
   const { w, handler } = wikiHandler(wiki);
   page.wiki = w;
   await page.route(/wikidata\.org|wikipedia\.org|wikimedia\.org/, handler);
@@ -463,8 +467,7 @@ test("사진 파일 자체를 못 받으면 오류와 다시 시도를 보여 �
   await page.click('#results .site-row[data-id="149496"]');
   await page.waitForSelector("#photo-retry");
   await page.click("#photo-retry");
-  await page.waitForSelector("#d-photo img");
-  assert.equal(await page.$eval("#d-photo img", (i) => i.complete && i.naturalWidth > 0), true);
+  await page.waitForFunction(() => { const i = document.querySelector("#d-photo img"); return i && i.complete && i.naturalWidth > 0; });
 });
 
 test("다른 유적으로 옮긴 뒤 도착한 이전 유적의 사진·설명은 현재 상세를 바꾸지 않는다", async (browser) => {
@@ -655,6 +658,160 @@ test("시작 지역마다 실제 유적이 있다", async (browser) => {
     const label = await page.locator(".region").nth(i).innerText();
     assert.ok(await inViewCount(page) >= 10, `${label}: 지도 범위 안 유적 ${await inViewCount(page)}곳`);
   }
+});
+
+
+// ── 고고학 아이콘·확대 단계 ────────────────────
+test("아이콘 품질: 18개를 16/20/24/32px로 렌더링, 헷갈리기 쉬운 쌍의 실루엣 겹침이 기준 이하", async (browser) => {
+  const r = await iconReport(browser);
+  for (const [k, v] of Object.entries(r)) {
+    if (k.includes("↔")) assert.ok(v <= MAX_IOU, `${k} IoU ${v}`);
+    if (k.startsWith("ink")) assert.ok(v >= 20, `${k}: 거의 비어 있음 (${v}px)`);
+  }
+  console.log("    실루엣 IoU:", Object.entries(r).filter(([k]) => k.includes("↔")).map(([k, v]) => `${k} ${v}`).join(", "));
+});
+
+test("확대 단계: 4 밀도 → 7 채움형 → 10 윤곽형 → 13 윤곽형+라벨, 사이트별 DOM 마커 없음", async (browser) => {
+  const iconRequests = [];
+  const page = await openPage(browser, { beforeLoad: (p) => p.on("request", (r) => { if (r.url().includes("/icons/")) iconRequests.push(r.url()); }) });
+  const expect = [[4, "density"], [7, "glyph"], [10, "outline"], [13, "outline-label"]];
+  for (const [z, mode] of expect) {
+    await setView(page, z === 4 ? 46 : 41.8925, z === 4 ? 10 : 12.4853, z);
+    await page.waitForTimeout(300);
+    const st = await dbg(page, "(d) => d.drawStats()");
+    assert.equal(await dbg(page, "(d) => d.mode()"), mode, `줌 ${z}`);
+    assert.equal(st.mode, mode);
+    if (mode === "density") { assert.ok(st.cells > 50, `밀도 칸 ${st.cells}`); assert.equal(st.drawn, 0); }
+    else assert.ok(st.drawn > 20, `줌 ${z} 배지 ${st.drawn}`);
+    if (mode === "outline-label") assert.ok(st.labels > 0 && st.labels <= 36, `라벨 ${st.labels}`);
+    else assert.equal(st.labels, 0, "줌 12 미만에서는 라벨 없음");
+    assert.equal(await page.getAttribute(`.lod-steps li[data-mode="${mode}"]`, "aria-current"), "true");
+    await page.screenshot({ path: join(SHOTS, `lod-z${z}.png`) });
+  }
+  assert.equal(await page.locator(".leaflet-marker-icon").count(), 0, "유적마다 DOM 마커를 만들지 않는다");
+  assert.ok(await page.locator("#map svg").count() <= 2);
+  assert.equal(new Set(iconRequests).size, 18, "아이콘 18개");
+  assert.equal(iconRequests.length, 18, "줌을 바꿔도 아이콘을 다시 받지 않는다");
+  assert.equal(await page.locator("#via-icon-sprite symbol").count(), 18);
+});
+
+test("밀도 칸을 누르면 그곳으로 확대되고, 선택한 유적은 어느 단계에서나 강조된다", async (browser) => {
+  const page = await openPage(browser);
+  await setView(page, 43.5, 11, 4);
+  const cell = await dbg(page, `(d) => { const c = d.map.getContainer().getBoundingClientRect(); return { x: c.left + c.width / 2, y: c.top + c.height / 2 }; }`);
+  // 칸이 있는 점을 찾아 누른다
+  const target = await page.evaluate(() => {
+    const d = window.viaRomanaDebug; const s = d.state.byId.get("285857974");
+    const p = d.map.latLngToContainerPoint([s.coordinates[1], s.coordinates[0]]); return { x: p.x, y: p.y };
+  });
+  await page.mouse.click(target.x, target.y);
+  await page.waitForTimeout(400);
+  assert.equal(await dbg(page, "(d) => d.map.getZoom()"), 6);
+  assert.ok(cell);
+  await search(page, "콜로세움");
+  await page.click('#results .site-row[data-id="285857974"]');
+  for (const z of [4, 7, 10, 14]) {
+    await setView(page, 41.89025, 12.49235, z);
+    assert.equal((await dbg(page, "(d) => d.drawStats()")).selected, true, `줌 ${z}에서 선택 강조`);
+  }
+});
+
+test("범례·필터: 윤곽 아이콘과 글자를 함께 쓰고, 필터는 aria-pressed·aria-label을 가진다", async (browser) => {
+  const page = await openPage(browser);
+  await page.click("#legend summary");
+  assert.equal(await page.locator("#legend-list li").count(), 9);
+  assert.equal(await page.locator('#legend-list li use[href^="#ico-outline-"]').count(), 9);
+  assert.equal(await page.locator("#legend-peek use").count(), 9);
+  await openFilters(page);
+  const chips = await page.$$eval(".chip", (els) => els.map((e) => [e.getAttribute("aria-label"), e.getAttribute("aria-pressed"), !!e.querySelector('use[href^="#ico-outline-"]'), e.querySelector("svg").getAttribute("aria-hidden")]));
+  assert.equal(chips.length, 9);
+  for (const [label, pressed, icon, hidden] of chips) {
+    assert.match(label, /곳$/); assert.equal(pressed, "true"); assert.ok(icon); assert.equal(hidden, "true");
+  }
+  await page.screenshot({ path: join(SHOTS, "legend.png") });
+});
+
+test("glyph ↔ outline 전환은 짧게 겹쳐 바뀌고, reduced-motion이면 바로 바뀐다", async (browser) => {
+  const page = await openPage(browser);
+  await setView(page, 41.9, 12.5, 8);
+  const before = await dbg(page, "(d) => d.fadeCount()");
+  await dbg(page, "(d) => d.map.setZoom(9, { animate: false })");
+  await page.waitForTimeout(300);
+  assert.equal(await dbg(page, "(d) => d.fadeCount()"), before + 1, "glyph → outline 전환에서 크로스페이드");
+  await dbg(page, "(d) => d.map.setZoom(10, { animate: false })");
+  await page.waitForTimeout(300);
+  assert.equal(await dbg(page, "(d) => d.fadeCount()"), before + 1, "같은 outline 단계 안에서는 전환 없음");
+  const still = await openPage(browser, { reducedMotion: "reduce" });
+  await setView(still, 41.9, 12.5, 8);
+  await dbg(still, "(d) => d.map.setZoom(9, { animate: false })");
+  await still.waitForTimeout(300);
+  assert.equal(await dbg(still, "(d) => d.fadeCount()"), 0, "reduced-motion이면 바로 바뀐다");
+});
+
+test("행군: 이정표 XX MP, 낮은 줌에서도 반경 안 유적은 아이콘, 선택하면 출발점 연결선과 로마마일", async (browser) => {
+  const page = await openPage(browser);
+  await search(page, "Pont du Gard");
+  await page.click('#results .site-row[data-id="149496"]');
+  await page.click("#d-explore");
+  await page.waitForFunction(() => window.viaRomanaDebug.state.march?.status === "ready");
+  assert.equal(await page.locator(".milestone").count(), 1);
+  assert.match(await page.locator(".milestone").innerText(), /XX\s*MP/);
+  await page.click("#search-clear");
+  await page.waitForFunction(() => window.viaRomanaDebug.state.march?.result?.count > 5);
+  await page.waitForTimeout(300);
+  const other = await page.getAttribute("#results .site-row >> nth=3", "data-id");
+  assert.equal(await page.locator(".mile-label").count(), 0, "출발점 자신을 고른 동안에는 연결선 없음");
+  await page.click(`#results .site-row[data-id="${other}"]`);
+  await page.waitForSelector(".mile-label");
+  assert.equal(await page.locator(".mile-label").count(), 1);
+  assert.match(await page.locator(".mile-label").innerText(), /^(?:[IVXLC]+ MP|I MP 미만) · [\d.]+km$/);
+  await page.screenshot({ path: join(SHOTS, "march-connector.png") });
+  await page.waitForTimeout(800);   // 선택 후 지도 이동 애니메이션이 끝나기를 기다린다
+  await setView(page, 43.9, 4.5, 5);
+  const st = await dbg(page, "(d) => d.drawStats()");
+  assert.deepEqual(page.errors, []);
+  assert.equal(await dbg(page, "(d) => d.map.getZoom()"), 5);
+  assert.equal(st.mode, "density");
+  assert.ok(st.drawn > 0, "밀도 단계에서도 반경 안 유적은 아이콘으로 보인다");
+  await page.click("#detail-back");
+  await page.click("#march-clear");
+  await page.waitForTimeout(350);   // Leaflet 툴팁은 200ms 페이드 뒤에 DOM에서 빠진다
+  assert.equal(await page.locator(".mile-label").count(), 0);
+  assert.equal(await page.locator(".milestone").count(), 0);
+});
+
+test("박물관 카드: 사진→이름→분류 아이콘→존속 기간 막대→남은 정도→설명→행동, 연대 미상은 막대 없음", async (browser) => {
+  const page = await openPage(browser);
+  const ids = await dbg(page, `(d) => {
+    const dated = d.state.sites.find((s) => s.from != null && s.wd && s.from > -30 && s.to < 400);
+    const undated = d.state.sites.find((s) => s.from == null);
+    return [dated.id, undated.id];
+  }`);
+  await search(page, ids[0]);   // Pleiades ID로도 찾는다
+  await page.click(`#results .site-row[data-id="${ids[0]}"]`);
+  await page.waitForSelector("#d-photo img");
+  const order = await page.$$eval("#detail > *", (els) => els.map((e) => e.className || e.tagName).filter(Boolean));
+  const idx = (c) => order.findIndex((o) => String(o).includes(c));
+  assert.ok(idx("d-photo") < idx("d-name") && idx("d-name") < idx("d-cat") && idx("d-cat") < idx("period")
+    && idx("period") < idx("d-remains") && idx("d-remains") < idx("d-about") && idx("d-about") < idx("d-actions"), order.join(" > "));
+  assert.equal(await page.locator(".period-bar").count(), 1);
+  assert.equal(await page.locator('.d-cat use[href^="#ico-outline-"]').count(), 1);
+  await page.screenshot({ path: join(SHOTS, "museum-card.png") });
+  await page.click("#detail-back");
+  await search(page, ids[1]);
+  await page.click(`#results .site-row[data-id="${ids[1]}"]`);
+  assert.equal(await page.locator(".period-bar").count(), 0);
+  assert.match(await text(page, ".d-period-unknown"), /연대 미상/);
+});
+
+test("로마 배경이 기본이고 출처 표기가 남아 있다", async (browser) => {
+  const page = await openPage(browser);
+  assert.equal(await page.getAttribute('.basemap [data-base="roman"]', "aria-pressed"), "true");
+  assert.ok(await page.locator(".tiles-roman").count() > 0);
+  const credit = await text(page, ".leaflet-control-attribution");
+  assert.match(credit, /OpenStreetMap/); assert.match(credit, /CARTO/); assert.match(credit, /Pleiades/);
+  await page.click('.basemap [data-base="sat"]');
+  assert.match(await text(page, ".leaflet-control-attribution"), /Esri/);
 });
 
 for (const [vp, size] of Object.entries(VIEWPORTS)) {

@@ -40,7 +40,7 @@ CATEGORIES = [
     {
         "key": "villa",
         "label": "빌라",
-        "color": "#C49A2C",  # 황토(yellow ochre)
+        "color": "#9C7A22",  # 황토(yellow ochre). 흰 아이콘 대비 3:1 이상이 되게 어둡게
         "types": ["villa", "estate", "townhouse"],
     },
     {
@@ -65,7 +65,7 @@ CATEGORIES = [
     {
         "key": "town",
         "label": "도시·정착지",
-        "color": "#9A9384",  # 응회암(tufa)
+        "color": "#7D7566",  # 응회암(tufa). 흰 아이콘 대비 3:1 이상이 되게 어둡게
         "types": ["settlement", "forum", "basilica", "city-block",
                   "architecturalcomplex", "archaeological-site", "ruin", "building"],
     },

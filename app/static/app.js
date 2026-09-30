@@ -53,13 +53,14 @@
     phase: "loading",          // loading | ready | error
     meta: null,
     catByKey: {},
-    sites: [],                 // { id, name, cat, ..., coordinates, text, marker, shown }
+    sites: [],                 // { id, name, cat, ..., coordinates, text, p0(투영 좌표), prio }
     byId: new Map(),
     sortedByName: null,
     filter: { q: "", terms: [], active: new Set(), visibleOnly: false },
     scope: "view",             // view | all | march
     shownCount: PAGE,
     selectedId: null,
+    focusId: null,             // 목록에서 가리키거나 포커스한 유적 (지도에 테두리로 표시)
     picking: false,
     march: null,               // { center, layers, status, result }
   };
@@ -77,13 +78,21 @@
     markerZoomAnimation: animate(),
   });
   L.control.zoom({ position: "bottomright" }).addTo(map);
-  const renderer = L.canvas({ padding: 0.5, tolerance: 8 });
   map.attributionControl.addAttribution('유적: <a href="https://pleiades.stoa.org">Pleiades</a>');
 
   // CARTO는 키 없이 요청하면 타일에 "API key required" 워터마크가 찍힌다.
   // 서버에 CARTO_API_KEY가 있으면 /api/meta를 받은 뒤 키를 붙여서 띄운다
   const CARTO_URL = "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png";
+  // 로마: 지명·현대 표기가 없는 CARTO 지도를 따뜻한 양피지 톤으로 (CSS 필터, .tiles-roman)
+  const CARTO_ROMAN_URL = "https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png";
+  const CARTO_CREDIT = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>';
   const bases = {
+    roman: L.tileLayer(CARTO_ROMAN_URL, {
+      maxZoom: 19,
+      subdomains: "abcd",
+      className: "tiles-roman",
+      attribution: CARTO_CREDIT,
+    }),
     map: L.tileLayer(CARTO_URL, {
       maxZoom: 19,
       subdomains: "abcd",
@@ -94,7 +103,7 @@
       attribution: "Tiles &copy; Esri",
     }),
   };
-  let baseKey = "map";
+  let baseKey = "roman";
 
   // 타일이 하나도 안 뜨고 실패만 쌓이면 배경 지도 오류로 따로 알린다 (유적 데이터 오류와 구분)
   function watchTiles(layer) {
@@ -128,7 +137,7 @@
     $("base-error").hidden = true;
     layer.redraw();
   });
-  $("base-switch").addEventListener("click", () => showBase(baseKey === "map" ? "sat" : "map"));
+  $("base-switch").addEventListener("click", () => showBase(baseKey === "sat" ? "roman" : "sat"));
 
   // ── Google 배경 지도 (서버에 GOOGLE_MAPS_API_KEY가 있을 때만) ──
   // Map Tiles API: 지도 유형마다 세션을 만들고, 화면 범위의 저작권 표시를 받아 띄운다
@@ -255,16 +264,20 @@
     setPhase("loading");
     const sitesReq = getJson("/api/sites", ctl.signal);
     sitesReq.catch(() => {});   // 실패는 아래 await에서 처리
+    // 아이콘 18개는 한 번만 받는다. 실패해도 지도는 색 원으로 그려진다
+    const iconsReq = ViaIcons.load().catch((err) => console.warn("아이콘을 불러오지 못했습니다.", err));
     try {
       const meta = state.meta || await getJson("/api/meta", ctl.signal);
       if (!state.meta) applyMeta(meta);
       const sites = await sitesReq;
       if (ctl !== loadCtl) return;
       applySites(sites.features);
+      iconsReq.then(prepareBadges);
       setPhase("ready");
       refresh({ announceCount: false });
     } catch (err) {
       if (ctl !== loadCtl || err.name === "AbortError") return;
+      console.error("유적 데이터를 적용하지 못했습니다.", err);
       // 배경 지도는 유적 데이터와 따로 띄운다
       if (!map.hasLayer(bases[baseKey])) showBase(baseKey);
       setPhase("error", navigator.onLine === false
@@ -280,13 +293,28 @@
     state.catByKey = Object.fromEntries(meta.categories.map((c) => [c.key, c]));
     state.filter.active = new Set(meta.categories.map((c) => c.key));
     // 배경 지도는 키 여부를 안 뒤에 띄워서 워터마크 타일을 먼저 받지 않게 한다
-    if (meta.carto_key) bases.map.setUrl(`${CARTO_URL}?key=${encodeURIComponent(meta.carto_key)}`, true);
+    if (meta.carto_key) {
+      const key = `?key=${encodeURIComponent(meta.carto_key)}`;
+      bases.map.setUrl(CARTO_URL + key, true);
+      bases.roman.setUrl(CARTO_ROMAN_URL + key, true);
+    }
     showBase(baseKey);
     if (meta.google_maps_key) useGoogle(meta.google_maps_key);
     $("march-lede").textContent =
       `로마 군단은 하루 20 로마마일(약 ${meta.day_march_km}km)을 걸었어요. 출발점을 정하면 그 반경 안의 유적을 가까운 순으로 보여 드려요.`;
     buildChips();
+    buildLegend();
     buildRegions();
+  }
+
+  // 범례: 설명 공간이 있으므로 항상 윤곽 아이콘을 쓴다. 접혀 있을 때도 채움형 아이콘 9개를 보여 준다
+  function buildLegend() {
+    $("legend-list").innerHTML = state.meta.categories.map((c) =>
+      `<li style="--c:${c.color}">${ViaIcons.use("outline", c.key, "legend-ico")}<span>${esc(c.label)}</span></li>`).join("");
+    $("legend-peek").innerHTML = state.meta.categories.map((c) =>
+      `<span class="peek-ico" style="--c:${c.color}">${ViaIcons.use("glyph", c.key)}</span>`).join("");
+    $("lod-glyph-sample").innerHTML = `<span class="peek-ico" style="--c:${state.catByKey.arena.color}">${ViaIcons.use("glyph", "arena")}</span>`;
+    $("lod-outline-sample").innerHTML = `<span class="outline-ico" style="--c:${state.catByKey.arena.color}">${ViaIcons.use("outline", "arena")}</span>`;
   }
 
   // 유적은 한 번만 만든다. 이미 있으면(재시도 경쟁 등) 건너뛴다
@@ -298,15 +326,15 @@
         ...p,
         ko: p.ko || [],
         coordinates: f.geometry.coordinates,
-        text: normalize([p.name, p.desc || "", ...(p.ko || [])].join(" ")),
+        text: normalize([p.name, p.desc || "", ...(p.ko || []), p.id].join(" ")),
         nameText: normalize([p.name, ...(p.ko || [])].join(" ")),
-        marker: null,
-        shown: false,
+        // 줌 0 기준 투영 좌표: 그릴 때 2^zoom만 곱하면 되도록 한 번만 계산
+        p0: map.project([f.geometry.coordinates[1], f.geometry.coordinates[0]], 0),
+        prio: VISIBLE.has(p.remains) ? (p.wd ? 1 : 2) : (p.wd ? 3 : 4),
       };
       state.sites.push(site);
       state.byId.set(site.id, site);
     }
-    buildMarkers();
   }
 
   // ── 필터 (지도·목록·건수·내보내기 공통) ─────────
@@ -346,7 +374,8 @@
       btn.dataset.cat = c.key;
       btn.style.setProperty("--c", c.color);
       btn.setAttribute("aria-pressed", "true");
-      btn.innerHTML = `<span class="swatch"></span>${esc(c.label)} <span class="n">${fmt.format(c.count)}</span>`;
+      btn.setAttribute("aria-label", `${c.label} ${fmt.format(c.count)}곳`);
+      btn.innerHTML = `${ViaIcons.use("outline", c.key)}<span>${esc(c.label)}</span> <span class="n" aria-hidden="true">${fmt.format(c.count)}</span>`;
       btn.addEventListener("click", () => {
         const a = state.filter.active;
         if (a.has(c.key)) a.delete(c.key); else a.add(c.key);
@@ -420,59 +449,365 @@
     filtersChanged();
   }
 
-  // ── 마커 ────────────────────────────────────
-  const markerLayer = L.layerGroup().addTo(map);
-  let markerRadius = 0;
-  const radiusForZoom = (z) => (z < 6 ? 3 : z < 9 ? 4.5 : 6.5);
+  // ── 지도 레이어 ──────────────────────────────
+  // 아래에서 위로: BASE(타일) → DENSITY → ROADS(Itiner-e 가도 자리, 지금은 비어 있음)
+  //   → SITES(glyph·outline) → MARCH(반경·이정표·연결선) → TOP(선택 강조·라벨)
+  // 유적은 DOM 마커를 만들지 않고 캔버스 두 장(sites, top)에 그린다
+  [["density", 410], ["roads", 420], ["sites", 430], ["march", 450], ["top", 470]].forEach(([name, z]) => {
+    map.createPane(name).style.zIndex = z;
+  });
+  map.getPane("density").style.pointerEvents = "none";
+  map.getPane("roads").style.pointerEvents = "none";
+  map.getPane("sites").style.pointerEvents = "none";
+  map.getPane("top").style.pointerEvents = "none";
 
-  function buildMarkers() {
-    markerRadius = radiusForZoom(map.getZoom());
-    for (const s of state.sites) {
-      const [lon, lat] = s.coordinates;
-      s.marker = L.circleMarker([lat, lon], {
-        renderer,
-        radius: markerRadius,
-        color: "#ffffff",
-        weight: 1,
-        fillColor: state.catByKey[s.cat].color,
-        fillOpacity: VISIBLE.has(s.remains) ? 0.95 : 0.45,
-      });
-      // 출발점 고르기 중에는 점을 눌러도 그 자리를 출발점으로 쓴다
-      s.marker.on("click", (e) => {
-        if (state.picking) pickAt(e.latlng);
-        else selectSite(s.id, { from: "map" });
-      });
+  // 확대 단계는 이 함수 하나로 정한다
+  function visualizationModeForZoom(zoom) {
+    if (zoom <= 5) return "density";
+    if (zoom <= 8) return "glyph";
+    if (zoom <= 11) return "outline";
+    return "outline-label";
+  }
+  const currentMode = () => visualizationModeForZoom(map.getZoom());
+  const iconKind = (mode) => (mode === "glyph" || mode === "density" ? "glyph" : "outline");
+
+  // 높은 줌 배지: B(밝은 바탕 + 분류 색 윤곽)가 기본. ?badge=a 로 A(분류 색 바탕)와 비교할 수 있다
+  const OUTLINE_STYLE = new URLSearchParams(location.search).get("badge") === "a" ? "A" : "B";
+  const DPR = () => Math.min(3, Math.round((window.devicePixelRatio || 1) * 2) / 2);
+  let badgesReady = false;
+
+  async function prepareBadges() {
+    if (!state.meta || !ViaIcons.text["glyph/town"]) return;
+    const colors = Object.fromEntries(state.meta.categories.map((c) => [c.key, c.color]));
+    await ViaIcons.prepareBadges(colors, DPR(), OUTLINE_STYLE);
+    badgesReady = true;
+    redrawSites();
+  }
+
+  // 현재 줌에서 컨테이너 좌표 (줌 0 투영 좌표 × 2^zoom − 원점)
+  function projector() {
+    const scale = 2 ** map.getZoom();
+    const origin = map.getPixelOrigin();
+    const pane = map.layerPointToContainerPoint([0, 0]);
+    return (s) => ({ x: s.p0.x * scale - origin.x + pane.x, y: s.p0.y * scale - origin.y + pane.y });
+  }
+
+  const drawStats = { mode: null, drawn: 0, overlapped: 0, cells: 0, labels: 0, selected: false, ms: 0, densityMs: 0 };
+  let hits = [];        // 이번에 그린 배지: { x, y, r, site }
+  let cells = [];       // 밀도 칸: { x, y, size, n }
+  let fade = null;      // glyph ↔ outline 전환: { from, start }
+  let fadeCount = 0;
+  let lastMode = null;
+  const FADE_MS = 140;
+
+  // 밀도 색: 양피지 → 청동 → 로마 적색 (무지개색 히트맵을 쓰지 않음)
+  const RAMP = [[232, 224, 207], [150, 116, 72], [140, 53, 45]];
+  function rampColor(t) {
+    const [a, b, u] = t < 0.5 ? [RAMP[0], RAMP[1], t * 2] : [RAMP[1], RAMP[2], (t - 0.5) * 2];
+    return `rgb(${a.map((v, i) => Math.round(v + (b[i] - v) * u)).join(",")})`;
+  }
+
+  // 줌 3–5: 개별 아이콘 대신 격자에 모은 밀도 (테세라 모자이크 조각처럼)
+  const densityLayer = new ViaCanvasLayer({
+    pane: "density",
+    draw(ctx, v) {
+      cells = [];
+      drawStats.cells = 0;
+      if (state.phase !== "ready" || currentMode() !== "density") return;
+      const t0 = performance.now();
+      const CELL = 16;
+      const at = projector();
+      const bins = new Map();
+      for (const s of last.matched) {
+        const p = at(s);
+        if (p.x < v.min.x || p.y < v.min.y || p.x > v.max.x || p.y > v.max.y) continue;
+        const key = `${Math.floor(p.x / CELL)},${Math.floor(p.y / CELL)}`;
+        bins.set(key, (bins.get(key) || 0) + 1);
+      }
+      let max = 1;
+      for (const n of bins.values()) max = Math.max(max, n);
+      for (const [key, n] of bins) {
+        const [gx, gy] = key.split(",").map(Number);
+        const t = Math.log(1 + n) / Math.log(1 + max);
+        const size = 6 + t * (CELL - 8);
+        const x = gx * CELL + CELL / 2;
+        const y = gy * CELL + CELL / 2;
+        ctx.globalAlpha = 0.55 + t * 0.4;
+        ctx.fillStyle = rampColor(t);
+        ctx.fillRect(x - size / 2, y - size / 2, size, size);
+        cells.push({ x, y, size: CELL, n });
+      }
+      ctx.globalAlpha = 1;
+      drawStats.cells = cells.length;
+      drawStats.densityMs = Math.round((performance.now() - t0) * 10) / 10;
+    },
+  }).addTo(map);
+
+  // 배지 하나 그리기 (아이콘이 아직 없으면 분류 색 원으로 대신)
+  function drawBadge(ctx, s, x, y, kind, scale = 1) {
+    const size = ViaIcons.SIZES[kind].badge;
+    const img = badgesReady && ViaIcons.badge(kind, s.cat, OUTLINE_STYLE, DPR());
+    if (img) {
+      const w = (img.width / DPR()) * scale;
+      ctx.drawImage(img, x - w / 2, y - w / 2, w, w);
+    } else {
+      ctx.beginPath();
+      ctx.arc(x, y, (size / 2) * scale * 0.6, 0, Math.PI * 2);
+      ctx.fillStyle = state.catByKey[s.cat].color;
+      ctx.fill();
     }
   }
 
-  // 바뀐 마커만 더하고 뺀다 (전부 지웠다 다시 넣지 않음)
-  function syncMarkers() {
-    for (const s of state.sites) {
-      const want = passes(s);
-      if (want === s.shown) continue;
-      if (want) markerLayer.addLayer(s.marker); else markerLayer.removeLayer(s.marker);
-      s.shown = want;
+  // 겹치는 배지는 우선순위가 높은 것만 남긴다
+  //   행군 반경 안 → 남아 있음+Wikidata → 남아 있음 → Wikidata → 나머지 (역사적 중요도를 지어내지 않음)
+  function layoutSites(v, mode, at) {
+    const kind = iconKind(mode);
+    const badge = ViaIcons.SIZES[kind].badge;
+    const march = state.march?.status === "ready" ? new Set(state.march.result.sites.map((r) => r.id)) : null;
+    const source = mode === "density" ? (march ? last.matched.filter((s) => march.has(s.id)) : []) : last.matched;
+    const cand = [];
+    let inView = 0;
+    for (const s of source) {
+      if (s.id === state.selectedId) continue;   // 선택된 곳은 TOP 레이어에서 그린다
+      const p = at(s);
+      if (p.x < v.min.x - badge || p.y < v.min.y - badge || p.x > v.max.x + badge || p.y > v.max.y + badge) continue;
+      if (p.x >= 0 && p.y >= 0 && p.x <= v.size.x && p.y <= v.size.y) inView++;
+      cand.push({ s, x: p.x, y: p.y, pr: march?.has(s.id) ? 0 : s.prio });
+    }
+    cand.sort((a, b) => a.pr - b.pr);
+    const min = badge * 0.72;
+    const grid = new Map();
+    const placed = [];
+    for (const c of cand) {
+      const gx = Math.floor(c.x / min);
+      const gy = Math.floor(c.y / min);
+      let free = true;
+      for (let dx = -1; dx <= 1 && free; dx++) {
+        for (let dy = -1; dy <= 1 && free; dy++) {
+          for (const o of grid.get(`${gx + dx},${gy + dy}`) || []) {
+            if ((o.x - c.x) ** 2 + (o.y - c.y) ** 2 < min * min) { free = false; break; }
+          }
+        }
+      }
+      if (!free) continue;
+      const k = `${gx},${gy}`;
+      if (!grid.has(k)) grid.set(k, []);
+      grid.get(k).push(c);
+      placed.push(c);
+    }
+    const shown = placed.filter((c) => c.x >= 0 && c.y >= 0 && c.x <= v.size.x && c.y <= v.size.y).length;
+    return { kind, placed, overlapped: Math.max(0, inView - shown), shown };
+  }
+
+  function paintSites(ctx, layout, alpha) {
+    // 우선순위가 낮은 것부터 그려서 중요한 배지가 위에 오게
+    for (let i = layout.placed.length - 1; i >= 0; i--) {
+      const c = layout.placed[i];
+      ctx.globalAlpha = alpha * (VISIBLE.has(c.s.remains) ? 1 : 0.62);
+      drawBadge(ctx, c.s, c.x, c.y, layout.kind);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  const sitesLayer = new ViaCanvasLayer({
+    pane: "sites",
+    draw(ctx, v) {
+      hits = [];
+      if (state.phase !== "ready") return;
+      const t0 = performance.now();
+      const mode = currentMode();
+      const at = projector();
+      if (lastMode && lastMode !== mode && animate() && iconKind(lastMode) !== iconKind(mode) && mode !== "density" && lastMode !== "density") {
+        fade = { from: lastMode, start: performance.now() };
+        fadeCount++;
+      }
+      lastMode = mode;
+      const layout = layoutSites(v, mode, at);
+      let t = 1;
+      if (fade) {
+        t = Math.min(1, (performance.now() - fade.start) / FADE_MS);
+        if (t < 1) {
+          paintSites(ctx, layoutSites(v, fade.from, at), 1 - t);
+          requestAnimationFrame(() => sitesLayer.redraw());
+        } else fade = null;
+      }
+      paintSites(ctx, layout, t);
+      const r = ViaIcons.SIZES[layout.kind].badge / 2;
+      hits = layout.placed.map((c) => ({ x: c.x, y: c.y, r, site: c.s }));
+      Object.assign(drawStats, { mode, drawn: layout.shown, overlapped: layout.overlapped, ms: Math.round((performance.now() - t0) * 10) / 10 });
+      renderLod();
+    },
+  }).addTo(map);
+
+  // 선택 강조와 라벨 (줌 12 이상에서만, 우선순위: 선택 → 목록에서 가리킨 곳 → 남아 있음 → Wikidata 연결)
+  const LABEL_MAX = 36;
+  const topLayer = new ViaCanvasLayer({
+    pane: "top",
+    draw(ctx, v) {
+      drawStats.selected = false;
+      drawStats.labels = 0;
+      if (state.phase !== "ready") return;
+      const mode = currentMode();
+      const at = projector();
+      const kind = iconKind(mode);
+      const r = ViaIcons.SIZES[kind].badge / 2;
+      const focus = state.focusId && state.focusId !== state.selectedId ? state.byId.get(state.focusId) : null;
+      if (focus) {
+        const p = at(focus);
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r + 4, 0, Math.PI * 2);
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = "#2D4E9E";
+        ctx.stroke();
+      }
+      const sel = state.selectedId ? state.byId.get(state.selectedId) : null;
+      if (sel) {
+        const p = at(sel);
+        const R = r * 1.18;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, R + 7, 0, Math.PI * 2);
+        ctx.lineWidth = 5;
+        ctx.strokeStyle = "rgba(38, 40, 44, 0.18)";
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, R + 3.5, 0, Math.PI * 2);
+        ctx.lineWidth = 2.5;
+        ctx.strokeStyle = "#26282C";
+        ctx.stroke();
+        drawBadge(ctx, sel, p.x, p.y, kind, 1.18);
+        drawStats.selected = true;
+      }
+      if (mode !== "outline-label") return;
+      const cand = [];
+      if (sel) cand.push(sel);
+      if (focus) cand.push(focus);
+      const rest = hits.map((h) => h.site).filter((s) => s !== sel && s !== focus && (VISIBLE.has(s.remains) || s.wd));
+      rest.sort((a, b) => a.prio - b.prio);
+      cand.push(...rest);
+      ctx.font = '500 12px "IBM Plex Sans KR", system-ui, sans-serif';
+      ctx.textBaseline = "middle";
+      ctx.lineJoin = "round";
+      // 라벨끼리는 물론, 다른 배지 위에도 겹치지 않게 한다
+      const boxes = [];
+      const badgesAt = hits.map((h) => ({ x: h.x - h.r, y: h.y - h.r, w: h.r * 2, h: h.r * 2, site: h.site }));
+      if (sel) { const p = at(sel); badgesAt.push({ x: p.x - r * 1.3, y: p.y - r * 1.3, w: r * 2.6, h: r * 2.6, site: sel }); }
+      const overlaps = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+      for (const s of cand) {
+        if (drawStats.labels >= LABEL_MAX) break;
+        const p = at(s);
+        if (p.x < 0 || p.y < 0 || p.x > v.size.x || p.y > v.size.y) continue;
+        let text = s.ko[0] || s.name;
+        if (text.length > 30) text = `${text.slice(0, 29)}…`;
+        const w = ctx.measureText(text).width;
+        const box = { x: p.x + r + 5, y: p.y - 9, w: w + 6, h: 18 };
+        if (boxes.some((b) => overlaps(box, b))) continue;
+        if (s !== sel && badgesAt.some((b) => b.site !== s && overlaps(box, b))) continue;
+        boxes.push(box);
+        ctx.lineWidth = 3.5;
+        ctx.strokeStyle = "rgba(251, 250, 246, 0.95)";
+        ctx.strokeText(text, box.x + 3, p.y);
+        ctx.fillStyle = s === sel ? "#26282C" : "#3B3A36";
+        ctx.fillText(text, box.x + 3, p.y);
+        drawStats.labels++;
+      }
+    },
+  }).addTo(map);
+
+  function redrawSites() {
+    densityLayer.redraw();
+    sitesLayer.redraw();
+    topLayer.redraw();
+  }
+
+  // 지도 클릭: 배지를 누르면 선택, 밀도 칸을 누르면 그곳으로 두 단계 확대
+  function hitAt(pt) {
+    let best = null;
+    let bd = Infinity;
+    const sel = state.selectedId && state.byId.get(state.selectedId);
+    const list = sel ? [{ ...projector()(sel), r: ViaIcons.SIZES[iconKind(currentMode())].badge * 0.59, site: sel }, ...hits] : hits;
+    for (const h of list) {
+      const d = (h.x - pt.x) ** 2 + (h.y - pt.y) ** 2;
+      if (d <= (h.r + 4) ** 2 && d < bd) { bd = d; best = h.site; }
+    }
+    return best;
+  }
+
+  function onMapClick(e) {
+    if (state.phase !== "ready") return;
+    const site = hitAt(e.containerPoint);
+    if (site) { selectSite(site.id, { from: "map" }); return; }
+    if (currentMode() === "density") {
+      const c = cells.find((k) => Math.abs(k.x - e.containerPoint.x) <= k.size / 2 && Math.abs(k.y - e.containerPoint.y) <= k.size / 2);
+      if (c) map.setView(e.latlng, Math.min(map.getZoom() + 2, 8), { animate: animate() });
     }
   }
 
-  // 반지름 구간이 바뀔 때만 모든 마커를 고친다
-  map.on("zoomend", () => {
-    const r = radiusForZoom(map.getZoom());
-    if (r === markerRadius) return;
-    markerRadius = r;
-    for (const s of state.sites) s.marker?.setRadius(r);
-    if (selRing) selRing.setRadius(r + 5);
+  let hoverFrame = 0;
+  map.on("mousemove", (e) => {
+    if (hoverFrame) return;
+    hoverFrame = requestAnimationFrame(() => {
+      hoverFrame = 0;
+      const over = state.phase === "ready" && !state.picking && (hitAt(e.containerPoint)
+        || (currentMode() === "density" && cells.some((k) => Math.abs(k.x - e.containerPoint.x) <= k.size / 2 && Math.abs(k.y - e.containerPoint.y) <= k.size / 2)));
+      map.getContainer().classList.toggle("over-site", !!over);
+    });
   });
 
-  let selRing = null;
-  function highlight(site) {
-    if (selRing) map.removeLayer(selRing);
-    selRing = null;
-    if (!site) return;
-    const [lon, lat] = site.coordinates;
-    selRing = L.circleMarker([lat, lon], {
-      renderer, radius: markerRadius + 5, color: "#26282C", weight: 3, fill: false, interactive: false,
+  // 목록에서 가리키거나 포커스한 유적을 지도에서도 표시
+  function setFocus(id) {
+    if (state.focusId === id) return;
+    state.focusId = id;
+    topLayer.redraw();
+  }
+  $("results").addEventListener("focusin", (e) => setFocus(e.target.closest(".site-row")?.dataset.id || null));
+  $("results").addEventListener("focusout", () => setFocus(null));
+  $("results").addEventListener("mouseover", (e) => setFocus(e.target.closest(".site-row")?.dataset.id || null));
+  $("results").addEventListener("mouseleave", () => setFocus(null));
+
+  // 범례 옆 "지금 확대 단계" 안내
+  const LOD_TEXT = {
+    density: "유럽 전체: 유적이 모인 정도(밀도)",
+    glyph: "지역: 분류별 채움형 아이콘",
+    outline: "도시: 자세한 윤곽 아이콘",
+    "outline-label": "유적: 윤곽 아이콘과 주요 이름",
+  };
+  function renderLod() {
+    const mode = drawStats.mode;
+    document.querySelectorAll(".lod-steps li").forEach((li) => li.setAttribute("aria-current", String(li.dataset.mode === mode)));
+    const over = mode !== "density" && drawStats.overlapped > 0 ? ` · 겹친 ${fmt.format(drawStats.overlapped)}곳은 확대하면 보여요` : "";
+    $("lod-now").textContent = `지금: ${LOD_TEXT[mode]}${over}`;
+  }
+
+  // 로마 숫자 (행군 거리 표시용)
+  function roman(n) {
+    const table = [[1000, "M"], [900, "CM"], [500, "D"], [400, "CD"], [100, "C"], [90, "XC"], [50, "L"], [40, "XL"], [10, "X"], [9, "IX"], [5, "V"], [4, "IV"], [1, "I"]];
+    let out = "";
+    for (const [v, t] of table) while (n >= v) { out += t; n -= v; }
+    return out;
+  }
+
+  // 행군 반경 안의 유적을 고르면 출발점에서 그곳까지 직선과 거리(로마마일)를 보여 준다
+  let connector = null;      // [선, 거리 라벨]
+  function updateConnector() {
+    if (connector) connector.forEach((l) => map.removeLayer(l));
+    connector = null;
+    const m = state.march;
+    const sel = state.selectedId && state.byId.get(state.selectedId);
+    const row = m?.status === "ready" && sel && m.result.sites.find((r) => r.id === sel.id);
+    if (!row || row.distance_km < 0.05) return;   // 출발점이 바로 그 유적이면 선을 긋지 않는다
+    const miles = row.distance_km / state.meta.roman_mile_km;
+    const text = miles < 0.5 ? "I MP 미만" : `${roman(Math.round(miles))} MP`;
+    const end = L.latLng(sel.coordinates[1], sel.coordinates[0]);
+    const start = L.latLng(m.center);
+    const line = L.polyline([start, end], {
+      pane: "march", color: "#26282C", weight: 2, dashArray: "2 6", interactive: false,
     }).addTo(map);
+    // 이정표(XX MP)는 출발점 위에 서 있으므로 거리 라벨은 선 아래에 붙인다
+    const label = L.tooltip({ permanent: true, direction: "bottom", offset: [0, 6], className: "mile-label", interactive: false })
+      .setLatLng(L.latLng((start.lat + end.lat) / 2, (start.lng + end.lng) / 2))
+      .setContent(`${text} · ${row.distance_km.toFixed(1)}km`)
+      .addTo(map);
+    connector = [line, label];
   }
 
   // ── 목록·건수 ────────────────────────────────
@@ -519,8 +854,8 @@
 
   function refresh({ announceCount = true } = {}) {
     if (state.phase !== "ready") return;
-    syncMarkers();
     last = compute();
+    redrawSites();
     renderCounts();
     renderList();
     renderExportScope();
@@ -615,7 +950,7 @@
       const dist = distance == null ? ""
         : `<span class="dist">출발점에서 ${distance.toFixed(1)}km<br>(${(distance / mile).toFixed(1)} 로마마일)</span>`;
       return `<li><button type="button" class="site-row" data-id="${esc(s.id)}"${s.id === state.selectedId ? ' aria-current="true"' : ""} style="--c:${cat.color}">
-        <span class="swatch" aria-hidden="true"></span>
+        <span class="row-ico">${ViaIcons.use("glyph", s.cat)}</span>
         <span class="row-main"><span class="name">${esc(s.name)}</span>${ko}
           <span class="row-meta">${esc(cat.label)} · ${esc(REMAINS_LABEL[s.remains] || REMAINS_LABEL.unknown)}</span></span>
         ${dist}
@@ -718,7 +1053,9 @@
     if (state.picking) stopPicking();
     if ($("panel").dataset.state !== "detail") listScroll = $("panel-main").scrollTop;
     state.selectedId = id;
-    highlight(site);
+    topLayer.redraw();
+    sitesLayer.redraw();
+    updateConnector();
     $("results").querySelectorAll(".site-row").forEach((b) => {
       if (b.dataset.id === id) b.setAttribute("aria-current", "true"); else b.removeAttribute("aria-current");
     });
@@ -737,29 +1074,47 @@
   }
   $("detail-back").addEventListener("click", backToList);
 
+  // 존속 기간 막대: 기원전 100년 ~ 서기 500년 축 위에 표시. 연대 미상이면 막대를 만들지 않는다
+  const AXIS = [-100, 500];
+  const TICKS = [[-30, "BC 30"], [100, "100"], [200, "200"], [300, "300"], [400, "400"]];
+  function periodBar(s) {
+    if (s.from == null || s.to == null) return `<p class="d-period-unknown">연대 미상</p>`;
+    const pos = (y) => Math.min(100, Math.max(0, ((y - AXIS[0]) / (AXIS[1] - AXIS[0])) * 100));
+    const a = pos(s.from);
+    const b = pos(s.to);
+    const cls = `period-bar${s.from < AXIS[0] ? " open-l" : ""}${s.to > AXIS[1] ? " open-r" : ""}`;
+    return `<figure class="period" aria-label="존속 기간 ${year(s.from)} ~ ${year(s.to)}">
+      <div class="period-track" aria-hidden="true">
+        <span class="period-roman" style="left:${pos(-30)}%;width:${pos(400) - pos(-30)}%"></span>
+        ${TICKS.map(([y]) => `<span class="period-tick" style="left:${pos(y)}%"></span>`).join("")}
+        <span class="${cls}" style="left:${a}%;width:${Math.max(b - a, 1.2)}%"></span>
+      </div>
+      <div class="period-axis" aria-hidden="true">${TICKS.map(([y, t]) => `<span style="left:${pos(y)}%">${t}</span>`).join("")}</div>
+      <figcaption>${year(s.from)} ~ ${year(s.to)} <span class="muted-inline">Pleiades 기록 기준</span></figcaption>
+    </figure>`;
+  }
+
+  // 박물관 카드: 사진 → 이름 → 분류(윤곽 아이콘) → 존속 기간 → 남은 정도 → 설명 → 행동
   function renderDetail(s) {
     const cat = state.catByKey[s.cat];
-    const period = s.from == null ? "연대 미상" : `${year(s.from)} ~ ${year(s.to)}`;
     const [lon, lat] = s.coordinates;
+    const visible = VISIBLE.has(s.remains);
     $("detail").innerHTML = `
       <div class="d-photo" id="d-photo"></div>
       <h2 class="d-name" id="detail-name" tabindex="-1">${esc(s.name)}</h2>
       <p class="d-label" id="d-label">${esc(s.ko.join(" · "))}</p>
-      <span class="pop-cat" style="--c:${cat.color}"><span class="swatch"></span>${esc(cat.label)}</span>
-      <dl class="pop-facts">
-        <dt>시기</dt><dd>${period}</dd>
-        <dt>유적</dt><dd>${esc(REMAINS_LABEL[s.remains] || REMAINS_LABEL.unknown)}</dd>
-        ${s.certain ? "" : "<dt>위치</dt><dd>추정 위치</dd>"}
-      </dl>
+      <p class="d-cat" style="--c:${cat.color}">${ViaIcons.use("outline", s.cat, "d-cat-ico")}<span>${esc(cat.label)}</span></p>
+      ${periodBar(s)}
+      <p class="d-remains"><span class="remains-dot${visible ? " on" : ""}" aria-hidden="true"></span>${esc(REMAINS_LABEL[s.remains] || REMAINS_LABEL.unknown)}${s.certain ? "" : " · 추정 위치"}</p>
       <p class="d-note">‘남아 있음’은 유적의 보존 상태예요. 개방 시간·입장 가능 여부는 방문 전에 따로 확인해 주세요.</p>
+      <section class="d-about" id="d-about" aria-label="설명"></section>
+      ${s.desc ? `<p class="d-desc"><span class="d-desc-label">Pleiades 설명</span> <span lang="en">${esc(s.desc)}</span></p>` : ""}
       <div class="d-actions">
         <button type="button" class="btn primary" id="d-explore">이곳 주변 탐색</button>
         <a class="btn" href="https://www.google.com/maps/search/?api=1&query=${lat},${lon}" target="_blank" rel="noopener">구글맵</a>
         <a class="btn" href="https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}" target="_blank" rel="noopener">길찾기</a>
       </div>
-      <section class="d-about" id="d-about" aria-label="설명"></section>
-      ${s.desc ? `<p class="d-desc"><span class="d-desc-label">Pleiades 설명</span> <span lang="en">${esc(s.desc)}</span></p>` : ""}
-      <p class="d-links"><a href="https://pleiades.stoa.org/places/${encodeURIComponent(s.id)}" target="_blank" rel="noopener">Pleiades에서 보기</a></p>`;
+      <p class="d-links"><a href="https://pleiades.stoa.org/places/${encodeURIComponent(s.id)}" target="_blank" rel="noopener">Pleiades에서 보기 (ID ${esc(s.id)})</a></p>`;
     $("d-explore").addEventListener("click", () => exploreAround(s));
     renderPhoto(s);
     renderAbout(s);
@@ -921,15 +1276,22 @@
   function drawMarch(center, km) {
     if (state.march) state.march.layers.forEach((l) => map.removeLayer(l));
     const ring = L.circle(center, {
+      pane: "march",
       radius: km * 1000, color: "#26282C", weight: 2, dashArray: "6 6",
       fill: true, fillColor: "#26282C", fillOpacity: 0.04, interactive: false,
     }).addTo(map);
-    const stone = L.circleMarker(center, {
-      radius: 6, color: "#F1F2EF", weight: 2, fillColor: "#26282C", fillOpacity: 1, interactive: false,
+    // 가운데 이정표: XX MP (20 로마마일)
+    const stone = L.marker(center, {
+      pane: "march",
+      interactive: false,
+      keyboard: false,
+      icon: L.divIcon({
+        className: "milestone",
+        html: '<span class="ms-num">XX</span><span class="ms-mp">MP</span><span class="ms-dot"></span>',
+        iconSize: [44, 58],
+        iconAnchor: [22, 52],
+      }),
     }).addTo(map);
-    stone.bindTooltip(`XX MP (${km}km)`, {
-      permanent: true, direction: "top", offset: [0, -8], className: "milestone-label",
-    });
     return [ring, stone];
   }
 
@@ -980,6 +1342,8 @@
     locateGen++;
     if (state.march) state.march.layers.forEach((l) => map.removeLayer(l));
     state.march = null;
+    updateConnector();
+    redrawSites();
     if (state.scope === "march") state.scope = "view";
     setMarchStatus("");
     renderMarch();
@@ -1008,6 +1372,8 @@
       renderCounts();
       renderList();
       renderExportScope();
+      redrawSites();
+      updateConnector();
     }
   }
 
@@ -1045,7 +1411,10 @@
     const a = clearArea();
     pickAt(map.containerPointToLatLng([(a.left + a.right) / 2, (a.top + a.bottom) / 2]));
   });
-  map.on("click", (e) => { if (state.picking) pickAt(e.latlng); });
+  map.on("click", (e) => {
+    if (state.picking) { pickAt(e.latlng); return; }
+    onMapClick(e);
+  });
 
   // 현재 위치가 데이터 범위 밖이면 행군 대신 시작 지역·수동 선택을 권한다.
   // (그곳에 로마 유적이 없다는 뜻이 아니라, 이 지도의 데이터가 없다는 뜻)
@@ -1232,8 +1601,12 @@
   window.viaRomanaDebug = {
     map,
     state,
-    markerLayer,
-    markerCount: () => markerLayer.getLayers().length,
+    mode: () => currentMode(),
+    drawStats: () => ({ ...drawStats }),
+    // 지도 레이어가 그리는 대상(필터를 통과한 유적) 수
+    markerCount: () => (state.phase === "ready" ? last.matched.length : 0),
+    visualizationModeForZoom,
+    fadeCount: () => fadeCount,
     marchLayerCount: () => (state.march ? state.march.layers.filter((l) => map.hasLayer(l)).length : 0),
   };
   setPanel(isNarrow() ? "peek" : "list", { focus: false });

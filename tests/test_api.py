@@ -145,3 +145,46 @@ def test_normalize_rules():
 def test_site_detail():
     assert client.get("/api/sites/285857974").json()["properties"]["name"] == "Amphitheatrum Flavium"
     assert client.get("/api/sites/0").status_code == 404
+
+
+# ── 고고학 아이콘 ──────────────────────────────
+CATS = ["town", "military", "sacred", "arena", "water", "road", "villa", "burial", "industry"]
+
+
+@pytest.mark.parametrize("kind", ["glyph", "outline"])
+@pytest.mark.parametrize("cat", CATS)
+def test_icons_exist_and_follow_spec(kind, cat):
+    import xml.etree.ElementTree as ET
+    r = client.get(f"/icons/{kind}/{cat}.svg")
+    assert r.status_code == 200 and r.headers["content-type"].startswith("image/svg+xml")
+    root = ET.fromstring(r.text)
+    assert root.get("viewBox") == "0 0 24 24"
+    assert root.get("aria-hidden") == "true"
+    if kind == "glyph":
+        assert root.get("fill") == "currentColor"
+    else:
+        assert root.get("fill") == "none" and root.get("stroke") == "currentColor" and root.get("stroke-width") == "1.6"
+
+
+def test_every_category_has_both_icons():
+    from app.categories import CATEGORIES
+    assert sorted(c["key"] for c in CATEGORIES) == sorted(CATS)
+
+
+def test_category_colors_contrast_with_marble_icon():
+    """분류 색 배지 위의 대리석색(#F1F2EF) 아이콘은 그래픽 대비 3:1 이상."""
+    from app.categories import CATEGORIES
+
+    def lum(h):
+        c = [int(h[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+        c = [x / 12.92 if x <= 0.03928 else ((x + 0.055) / 1.055) ** 2.4 for x in c]
+        return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+
+    for c in CATEGORIES:
+        hi, lo = sorted([lum(c["color"]), lum("#F1F2EF")], reverse=True)
+        assert (hi + 0.05) / (lo + 0.05) >= 3, c["key"]
+
+
+def test_search_by_pleiades_id():
+    ids = [f["properties"]["id"] for f in client.get("/api/sites", params={"q": "149496"}).json()["features"]]
+    assert ids[0] == "149496"

@@ -96,10 +96,11 @@ SITES_BY_ID = {f["properties"]["id"]: f for f in SITES}
 META = load_meta()
 ALIASES, REGIONS = load_curated(SITES_BY_ID)
 
-# 검색 대상: 원래 이름 + Pleiades 설명 + 확인된 한국어 별칭
+# 검색 대상: 원래 이름 + Pleiades 설명 + 확인된 한국어 별칭 + Pleiades ID
 SEARCH_TEXT = {
     f["properties"]["id"]: normalize(" ".join([
         f["properties"]["name"], f["properties"].get("desc") or "", *ALIASES.get(f["properties"]["id"], []),
+        f["properties"]["id"],
     ]))
     for f in SITES
 }
@@ -220,7 +221,7 @@ def sites(
     cat: str | None = Query(None, description="분류 키, 쉼표로 여러 개 (예: arena,water)"),
     visible: bool = Query(False, description="유적이 남아 있는 곳만"),
     bbox: str | None = Query(None, description="서,남,동,북 (경도·위도)"),
-    q: str | None = Query(None, description="검색어: 이름·설명·한국어 별칭에 모든 단어가 들어 있는 유적"),
+    q: str | None = Query(None, description="검색어: 이름·설명·한국어 별칭·Pleiades ID에 모든 단어가 들어 있는 유적"),
 ):
     """유적 목록을 GeoJSON FeatureCollection으로 돌려준다. 확인된 한국어 별칭이 있으면 ko 속성."""
     cats = parse_cats(cat)
@@ -249,7 +250,7 @@ def near(
     cat: str | None = None,
     visible: bool = False,
     limit: int = Query(50, ge=1, le=500),
-    q: str | None = Query(None, description="검색어: 이름·설명·한국어 별칭에 모든 단어가 들어 있는 유적"),
+    q: str | None = Query(None, description="검색어: 이름·설명·한국어 별칭·Pleiades ID에 모든 단어가 들어 있는 유적"),
 ):
     """한 지점에서 반경 안의 유적을 가까운 순으로."""
     found = search_near(lat, lon, km, parse_cats(cat), visible, parse_q(q))
@@ -311,7 +312,7 @@ def export_kml(
     lat: float | None = Query(None, ge=-90, le=90),
     lon: float | None = Query(None, ge=-180, le=180),
     km: float = Query(DAY_MARCH_KM, gt=0, le=300),
-    q: str | None = Query(None, description="검색어: 이름·설명·한국어 별칭에 모든 단어가 들어 있는 유적"),
+    q: str | None = Query(None, description="검색어: 이름·설명·한국어 별칭·Pleiades ID에 모든 단어가 들어 있는 유적"),
 ):
     """Google 내 지도(My Maps)로 가져갈 KML. bbox 또는 lat·lon(반경 km) 중 하나."""
     cats = parse_cats(cat)
