@@ -16,10 +16,12 @@ window.ViaIcons = (() => {
   const MARBLE = "#F1F2EF";
   const PRESENTATION = ["fill", "fill-rule", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin"];
 
-  // 배지 크기(CSS px): 배지 지름과 그 안의 아이콘 크기
+  // 지도 표시 크기(CSS px): badge = 차지하는 자리(겹침 판단·클릭 범위), icon = 아이콘 크기
+  //   glyph  : 원 없이 분류 색 실루엣 + 얇은 대리석색 테두리
+  //   outline: 작은 밝은 원 배지 + 분류 색 윤곽
   const SIZES = {
-    glyph: { badge: 22, icon: 14 },
-    outline: { badge: 30, icon: 19 },
+    glyph: { badge: 17, icon: 14 },
+    outline: { badge: 22, icon: 14 },
   };
 
   const text = {};          // "glyph/town" → SVG 원문
@@ -79,36 +81,53 @@ window.ViaIcons = (() => {
     return img.decode().then(() => img);
   }
 
-  /* 분류 배지를 캔버스에 미리 그린다.
-   *   glyph      : 분류 색 원 + 대리석색 채움 아이콘 (중간 줌)
-   *   outline B  : 대리석색 원 + 분류 색 테두리·윤곽 아이콘 (높은 줌, 기본)
+  /* 분류 표식을 캔버스에 미리 그린다.
+   *   glyph      : 분류 색 실루엣, 흰 음각은 대리석색, 둘레에 대리석색 테두리 (중간 줌)
+   *   outline B  : 밝은 원 + 분류 색 테두리·윤곽 아이콘 (높은 줌, 기본)
    *   outline A  : 분류 색 원 + 대리석색 윤곽 아이콘 (비교용)
    */
   async function prepareBadges(colors, dpr, outlineStyle = "B") {
     const jobs = [];
     for (const cat of CATS) {
       const color = colors[cat];
-      for (const kind of ["glyph", "outline"]) {
-        const key = `${kind}/${cat}/${outlineStyle}/${dpr}`;
-        if (badges.has(key)) continue;
-        const { badge, icon } = SIZES[kind];
-        const light = kind === "outline" && outlineStyle === "B";
-        jobs.push(svgImage(text[`${kind}/${cat}`], icon * dpr, light ? color : MARBLE, kind === "glyph" ? color : null).then((img) => {
-          const px = (badge + 4) * dpr;   // 테두리 여유
+      const key = (kind) => `${kind}/${cat}/${outlineStyle}/${dpr}`;
+      if (!badges.has(key("glyph"))) {
+        const { icon } = SIZES.glyph;
+        const svg = text[`glyph/${cat}`];
+        jobs.push(Promise.all([
+          svgImage(svg, icon * dpr, color, MARBLE),
+          svgImage(svg, icon * dpr, MARBLE, MARBLE),
+        ]).then(([fg, halo]) => {
+          const pad = 2 * dpr;
+          const cv = document.createElement("canvas");
+          cv.width = cv.height = icon * dpr + pad * 2;
+          const ctx = cv.getContext("2d");
+          const h = 1.25 * dpr;
+          for (const [dx, dy] of [[-h, 0], [h, 0], [0, -h], [0, h], [-h, -h], [h, h], [-h, h], [h, -h]]) {
+            ctx.drawImage(halo, pad + dx, pad + dy);
+          }
+          ctx.drawImage(fg, pad, pad);
+          badges.set(key("glyph"), cv);
+        }));
+      }
+      if (!badges.has(key("outline"))) {
+        const { badge, icon } = SIZES.outline;
+        const light = outlineStyle === "B";
+        jobs.push(svgImage(text[`outline/${cat}`], icon * dpr, light ? color : MARBLE, null).then((img) => {
+          const px = (badge + 2) * dpr;
           const cv = document.createElement("canvas");
           cv.width = cv.height = px;
           const ctx = cv.getContext("2d");
           const c = px / 2;
-          const r = (badge / 2) * dpr;
           ctx.beginPath();
-          ctx.arc(c, c, r, 0, Math.PI * 2);
+          ctx.arc(c, c, ((badge - 1.5) / 2) * dpr, 0, Math.PI * 2);
           ctx.fillStyle = light ? "#FBFAF6" : color;
           ctx.fill();
-          ctx.lineWidth = (light ? 2 : 1.5) * dpr;
+          ctx.lineWidth = 1.5 * dpr;
           ctx.strokeStyle = light ? color : MARBLE;
           ctx.stroke();
           ctx.drawImage(img, c - (icon * dpr) / 2, c - (icon * dpr) / 2);
-          badges.set(key, cv);
+          badges.set(key("outline"), cv);
         }));
       }
     }

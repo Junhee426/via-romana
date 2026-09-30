@@ -475,7 +475,7 @@ button, input { font: inherit; color: inherit; }
 .site-list li + li { border-top: 1px solid var(--line); }
 .site-row {
   display: grid;
-  grid-template-columns: 26px 1fr auto;
+  grid-template-columns: 22px 1fr auto;
   align-items: center;
   gap: 10px;
   width: 100%;
@@ -489,18 +489,17 @@ button, input { font: inherit; color: inherit; }
 }
 .site-row:hover { background: rgba(38, 40, 44, 0.04); }
 .site-row[aria-current="true"] { background: var(--caeruleum-soft); }
+/* 목록·범례의 작은 아이콘도 지도처럼 원 없이 분류 색 실루엣 */
 .row-ico, .peek-ico {
   display: inline-grid;
   place-items: center;
   flex: none;
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
-  background: var(--c);
-  color: var(--marble);
-  --ico-hole: var(--c);
+  width: 22px;
+  height: 22px;
+  color: var(--c);
+  --ico-hole: var(--marble);
 }
-.row-ico .ico { width: 16px; height: 16px; }
+.row-ico .ico { width: 18px; height: 18px; }
 .row-main { display: flex; flex-direction: column; min-width: 0; }
 .row-main .name { font-size: 14.5px; overflow-wrap: anywhere; }
 .row-main .ko { font-size: 13px; color: var(--basalt); }
@@ -635,8 +634,8 @@ body.picking #map { cursor: crosshair; }
 .legend summary::after { content: "▾"; margin-left: auto; font-size: 12px; }
 .legend[open] summary::after { content: "▴"; }
 .legend-peek { display: flex; gap: 3px; flex-wrap: wrap; }
-.legend-peek .peek-ico { width: 20px; height: 20px; }
-.legend-peek .peek-ico .ico { width: 13px; height: 13px; }
+.legend-peek .peek-ico { width: 18px; height: 18px; }
+.legend-peek .peek-ico .ico { width: 16px; height: 16px; }
 .legend-list { list-style: none; display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; margin: 0 0 10px; padding: 0; font-size: 13.5px; }
 .legend-list li { display: flex; align-items: center; gap: 8px; }
 .legend-ico { width: 26px; height: 26px; flex: none; color: var(--c); }
@@ -648,13 +647,15 @@ body.picking #map { cursor: crosshair; }
 .lod-sample { display: inline-grid; place-items: center; width: 28px; height: 28px; flex: none; }
 .lod-sample .peek-ico { width: 22px; height: 22px; }
 .lod-sample .peek-ico .ico { width: 14px; height: 14px; }
-.lod-sample .outline-ico { display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: #FBFAF6; border: 2px solid var(--c); color: var(--c); }
-.lod-sample .outline-ico .ico { width: 18px; height: 18px; }
-.lod-sample.density {
-  background:
-    linear-gradient(90deg, var(--parchment) 0 33%, var(--bronze) 33% 66%, var(--roman-red) 66%);
-  width: 28px; height: 12px; border-radius: 2px;
-}
+.lod-sample .outline-ico { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: #FBFAF6; border: 1.5px solid var(--c); color: var(--c); }
+.lod-sample .outline-ico .ico { width: 14px; height: 14px; }
+.lod-sample.density { position: relative; }
+.lod-sample.density i { position: absolute; width: 4px; height: 4px; border-radius: 50%; }
+.lod-sample.density i:nth-child(1) { left: 5px; top: 8px; background: #B03A2E; }
+.lod-sample.density i:nth-child(2) { left: 12px; top: 12px; background: #7D7566; }
+.lod-sample.density i:nth-child(3) { left: 18px; top: 7px; background: #2D4E9E; }
+.lod-sample.density i:nth-child(4) { left: 9px; top: 18px; background: #6E4B2E; }
+.lod-sample.density i:nth-child(5) { left: 20px; top: 17px; background: #5E7A4E; }
 .lod-sample.label { font-size: 12px; font-weight: 600; color: var(--basalt); text-shadow: 0 0 3px #fff; }
 .lod-now { margin: 0 0 12px; font-size: 12.5px; color: var(--caeruleum); }
 .ico { display: block; }

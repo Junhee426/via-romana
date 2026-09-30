@@ -494,20 +494,15 @@
 
   const drawStats = { mode: null, drawn: 0, overlapped: 0, cells: 0, labels: 0, selected: false, ms: 0, densityMs: 0 };
   let hits = [];        // 이번에 그린 배지: { x, y, r, site }
-  let cells = [];       // 밀도 칸: { x, y, size, n }
+  let cells = [];       // 저배율 점: { x, y, size(클릭 범위) }
   let fade = null;      // glyph ↔ outline 전환: { from, start }
   let fadeCount = 0;
   let lastMode = null;
   const FADE_MS = 140;
 
-  // 밀도 색: 양피지 → 청동 → 로마 적색 (무지개색 히트맵을 쓰지 않음)
-  const RAMP = [[232, 224, 207], [150, 116, 72], [140, 53, 45]];
-  function rampColor(t) {
-    const [a, b, u] = t < 0.5 ? [RAMP[0], RAMP[1], t * 2] : [RAMP[1], RAMP[2], (t - 0.5) * 2];
-    return `rgb(${a.map((v, i) => Math.round(v + (b[i] - v) * u)).join(",")})`;
-  }
-
-  // 줌 3–5: 개별 아이콘 대신 격자에 모은 밀도 (테세라 모자이크 조각처럼)
+  // 줌 3–5: 유적마다 분류 색 점 하나 (점묘). 격자로 묶지 않아 가도·해안을 따라 늘어선 실제 분포가 보인다.
+  // 흐린 점을 먼저, 남아 있는 유적의 진한 점을 나중에 찍는다. 색마다 Path2D 하나로 모아 한 번에 칠한다
+  const dotRadius = (z) => (z <= 3 ? 1.2 : z === 4 ? 1.6 : 2.1);
   const densityLayer = new ViaCanvasLayer({
     pane: "density",
     draw(ctx, v) {
@@ -515,27 +510,28 @@
       drawStats.cells = 0;
       if (state.phase !== "ready" || currentMode() !== "density") return;
       const t0 = performance.now();
-      const CELL = 16;
       const at = projector();
-      const bins = new Map();
+      const r = dotRadius(map.getZoom());
+      const paths = new Map();   // "cat|strong" → Path2D
       for (const s of last.matched) {
         const p = at(s);
         if (p.x < v.min.x || p.y < v.min.y || p.x > v.max.x || p.y > v.max.y) continue;
-        const key = `${Math.floor(p.x / CELL)},${Math.floor(p.y / CELL)}`;
-        bins.set(key, (bins.get(key) || 0) + 1);
+        const strong = VISIBLE.has(s.remains);
+        const key = `${s.cat}|${strong ? 1 : 0}`;
+        if (!paths.has(key)) paths.set(key, new Path2D());
+        const path = paths.get(key);
+        path.moveTo(p.x + r, p.y);
+        path.arc(p.x, p.y, r, 0, Math.PI * 2);
+        cells.push({ x: p.x, y: p.y, size: 12 });
       }
-      let max = 1;
-      for (const n of bins.values()) max = Math.max(max, n);
-      for (const [key, n] of bins) {
-        const [gx, gy] = key.split(",").map(Number);
-        const t = Math.log(1 + n) / Math.log(1 + max);
-        const size = 6 + t * (CELL - 8);
-        const x = gx * CELL + CELL / 2;
-        const y = gy * CELL + CELL / 2;
-        ctx.globalAlpha = 0.55 + t * 0.4;
-        ctx.fillStyle = rampColor(t);
-        ctx.fillRect(x - size / 2, y - size / 2, size, size);
-        cells.push({ x, y, size: CELL, n });
+      for (const strong of [0, 1]) {
+        ctx.globalAlpha = strong ? 0.95 : 0.5;
+        for (const [key, path] of paths) {
+          const [cat, st] = key.split("|");
+          if (Number(st) !== strong) continue;
+          ctx.fillStyle = state.catByKey[cat].color;
+          ctx.fill(path);
+        }
       }
       ctx.globalAlpha = 1;
       drawStats.cells = cells.length;
@@ -575,7 +571,7 @@
       cand.push({ s, x: p.x, y: p.y, pr: march?.has(s.id) ? 0 : s.prio });
     }
     cand.sort((a, b) => a.pr - b.pr);
-    const min = badge * 0.72;
+    const min = badge * 0.8;
     const grid = new Map();
     const placed = [];
     for (const c of cand) {
@@ -719,7 +715,7 @@
     topLayer.redraw();
   }
 
-  // 지도 클릭: 배지를 누르면 선택, 밀도 칸을 누르면 그곳으로 두 단계 확대
+  // 지도 클릭: 표식을 누르면 선택, 저배율 점 근처를 누르면 그곳으로 두 단계 확대
   function hitAt(pt) {
     let best = null;
     let bd = Infinity;
@@ -766,8 +762,8 @@
 
   // 범례 옆 "지금 확대 단계" 안내
   const LOD_TEXT = {
-    density: "유럽 전체: 유적이 모인 정도(밀도)",
-    glyph: "지역: 분류별 채움형 아이콘",
+    density: "유럽 전체: 유적마다 분류 색 점",
+    glyph: "지역: 분류 색 실루엣 아이콘",
     outline: "도시: 자세한 윤곽 아이콘",
     "outline-label": "유적: 윤곽 아이콘과 주요 이름",
   };
