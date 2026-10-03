@@ -96,7 +96,7 @@
     map: L.tileLayer(CARTO_URL, {
       maxZoom: 19,
       subdomains: "abcd",
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
+      attribution: CARTO_CREDIT,
     }),
     sat: L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
       maxZoom: 19,
@@ -174,10 +174,21 @@
     map.on("moveend", updateGoogleCredit);
   }
 
+  let creditGen = 0;
+  function setGoogleCredit(text) {
+    if (googleCredit) map.attributionControl.removeAttribution(googleCredit);
+    googleCredit = text ? esc(text) : "";
+    if (googleCredit) map.attributionControl.addAttribution(googleCredit);
+  }
+
+  // Google 타일("지도"·"위성")을 보고 있을 때만 Google 저작권을 붙인다. 로마 배경은 CARTO라 붙이지 않는다
   async function updateGoogleCredit() {
+    const gen = ++creditGen;
+    const session = google.sessions[baseKey];
+    if (!session) { setGoogleCredit(""); return; }
     const b = map.getBounds();
     const params = new URLSearchParams({
-      session: google.sessions[baseKey],
+      session,
       key: google.key,
       zoom: map.getZoom(),
       north: b.getNorth(), south: b.getSouth(),
@@ -191,9 +202,8 @@
         if (copyright) text = `Google · ${copyright}`;
       }
     } catch { /* 저작권 표시는 기본값으로 */ }
-    if (googleCredit) map.attributionControl.removeAttribution(googleCredit);
-    googleCredit = esc(text);
-    map.attributionControl.addAttribution(googleCredit);
+    if (gen !== creditGen) return;   // 그사이 배경을 바꿨거나 지도를 또 옮겼으면 버린다
+    setGoogleCredit(text);
   }
 
   // 지도에서 상단 바·배너·패널에 가리지 않는 영역 (컨테이너 기준 px)
@@ -473,15 +483,21 @@
 
   // 높은 줌 배지: B(밝은 바탕 + 분류 색 윤곽)가 기본. ?badge=a 로 A(분류 색 바탕)와 비교할 수 있다
   const OUTLINE_STYLE = new URLSearchParams(location.search).get("badge") === "a" ? "A" : "B";
-  const DPR = () => Math.min(3, Math.round((window.devicePixelRatio || 1) * 2) / 2);
+  // 캔버스 배율은 2배까지만 (고배율 기기에서 캔버스 메모리가 너무 커지지 않게). js/canvas-layer.js와 같은 값
+  const DPR = () => Math.min(2, Math.round((window.devicePixelRatio || 1) * 2) / 2);
   let badgesReady = false;
+  let preparing = null;
 
-  async function prepareBadges() {
-    if (!state.meta || !ViaIcons.text["glyph/town"]) return;
+  // 배지는 배율마다 따로 만든다. 창을 배율이 다른 화면으로 옮기면 drawBadge가 다시 부른다
+  function prepareBadges() {
+    if (!state.meta || !ViaIcons.text["glyph/town"]) return Promise.resolve();
+    if (preparing) return preparing;
     const colors = Object.fromEntries(state.meta.categories.map((c) => [c.key, c.color]));
-    await ViaIcons.prepareBadges(colors, DPR(), OUTLINE_STYLE);
-    badgesReady = true;
-    redrawSites();
+    preparing = ViaIcons.prepareBadges(colors, DPR(), OUTLINE_STYLE)
+      .then(() => { badgesReady = true; redrawSites(); })
+      .catch((err) => console.warn("아이콘 배지를 만들지 못했습니다.", err))
+      .finally(() => { preparing = null; });
+    return preparing;
   }
 
   // 현재 줌에서 컨테이너 좌표 (줌 0 투영 좌표 × 2^zoom − 원점)
@@ -495,6 +511,25 @@
   const drawStats = { mode: null, drawn: 0, overlapped: 0, cells: 0, labels: 0, selected: false, ms: 0, densityMs: 0 };
   let hits = [];        // 이번에 그린 배지: { x, y, r, site }
   let cells = [];       // 저배율 점: { x, y, size(클릭 범위) }
+  // 클릭·호버 때 1만 개를 다 훑지 않도록 그린 표식을 격자 칸에 나눠 담는다
+  const GRID = 32;
+  const gridKey = (x, y) => `${Math.floor(x / GRID)},${Math.floor(y / GRID)}`;
+  function indexPoints(items) {
+    const grid = new Map();
+    for (const it of items) {
+      const k = gridKey(it.x, it.y);
+      if (!grid.has(k)) grid.set(k, []);
+      grid.get(k).push(it);
+    }
+    return grid;
+  }
+  function* near(grid, pt) {
+    const gx = Math.floor(pt.x / GRID);
+    const gy = Math.floor(pt.y / GRID);
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) yield* grid.get(`${gx + dx},${gy + dy}`) || [];
+  }
+  let hitGrid = new Map();
+  let cellGrid = new Map();
   let fade = null;      // glyph ↔ outline 전환: { from, start }
   let fadeCount = 0;
   let lastMode = null;
@@ -507,6 +542,7 @@
     pane: "density",
     draw(ctx, v) {
       cells = [];
+      cellGrid = new Map();
       drawStats.cells = 0;
       if (state.phase !== "ready" || currentMode() !== "density") return;
       const t0 = performance.now();
@@ -534,6 +570,7 @@
         }
       }
       ctx.globalAlpha = 1;
+      cellGrid = indexPoints(cells);
       drawStats.cells = cells.length;
       drawStats.densityMs = Math.round((performance.now() - t0) * 10) / 10;
     },
@@ -543,6 +580,7 @@
   function drawBadge(ctx, s, x, y, kind, scale = 1) {
     const size = ViaIcons.SIZES[kind].badge;
     const img = badgesReady && ViaIcons.badge(kind, s.cat, OUTLINE_STYLE, DPR());
+    if (badgesReady && !img) prepareBadges();   // 화면 배율이 바뀜: 이번에는 원으로 그리고 배지를 새로 만든다
     if (img) {
       const w = (img.width / DPR()) * scale;
       ctx.drawImage(img, x - w / 2, y - w / 2, w, w);
@@ -609,6 +647,7 @@
     pane: "sites",
     draw(ctx, v) {
       hits = [];
+      hitGrid = new Map();
       if (state.phase !== "ready") return;
       const t0 = performance.now();
       const mode = currentMode();
@@ -630,6 +669,7 @@
       paintSites(ctx, layout, t);
       const r = ViaIcons.SIZES[layout.kind].badge / 2;
       hits = layout.placed.map((c) => ({ x: c.x, y: c.y, r, site: c.s }));
+      hitGrid = indexPoints(hits);
       Object.assign(drawStats, { mode, drawn: layout.shown, overlapped: layout.overlapped, ms: Math.round((performance.now() - t0) * 10) / 10 });
       renderLod();
     },
@@ -719,22 +759,31 @@
   function hitAt(pt) {
     let best = null;
     let bd = Infinity;
+    const consider = (x, y, r, site) => {
+      const d = (x - pt.x) ** 2 + (y - pt.y) ** 2;
+      if (d <= (r + 4) ** 2 && d < bd) { bd = d; best = site; }
+    };
     const sel = state.selectedId && state.byId.get(state.selectedId);
-    const list = sel ? [{ ...projector()(sel), r: ViaIcons.SIZES[iconKind(currentMode())].badge * 0.59, site: sel }, ...hits] : hits;
-    for (const h of list) {
-      const d = (h.x - pt.x) ** 2 + (h.y - pt.y) ** 2;
-      if (d <= (h.r + 4) ** 2 && d < bd) { bd = d; best = h.site; }
+    if (sel) {
+      const p = projector()(sel);
+      consider(p.x, p.y, ViaIcons.SIZES[iconKind(currentMode())].badge * 0.59, sel);
     }
+    for (const h of near(hitGrid, pt)) consider(h.x, h.y, h.r, h.site);
     return best;
+  }
+  function dotAt(pt) {
+    for (const k of near(cellGrid, pt)) {
+      if (Math.abs(k.x - pt.x) <= k.size / 2 && Math.abs(k.y - pt.y) <= k.size / 2) return k;
+    }
+    return null;
   }
 
   function onMapClick(e) {
     if (state.phase !== "ready") return;
     const site = hitAt(e.containerPoint);
     if (site) { selectSite(site.id, { from: "map" }); return; }
-    if (currentMode() === "density") {
-      const c = cells.find((k) => Math.abs(k.x - e.containerPoint.x) <= k.size / 2 && Math.abs(k.y - e.containerPoint.y) <= k.size / 2);
-      if (c) map.setView(e.latlng, Math.min(map.getZoom() + 2, 8), { animate: animate() });
+    if (currentMode() === "density" && dotAt(e.containerPoint)) {
+      map.setView(e.latlng, Math.min(map.getZoom() + 2, 8), { animate: animate() });
     }
   }
 
@@ -743,8 +792,8 @@
     if (hoverFrame) return;
     hoverFrame = requestAnimationFrame(() => {
       hoverFrame = 0;
-      const over = state.phase === "ready" && !state.picking && (hitAt(e.containerPoint)
-        || (currentMode() === "density" && cells.some((k) => Math.abs(k.x - e.containerPoint.x) <= k.size / 2 && Math.abs(k.y - e.containerPoint.y) <= k.size / 2)));
+      const over = state.phase === "ready" && !state.picking
+        && (hitAt(e.containerPoint) || (currentMode() === "density" && dotAt(e.containerPoint)));
       map.getContainer().classList.toggle("over-site", !!over);
     });
   });
@@ -1049,8 +1098,8 @@
     if (state.picking) stopPicking();
     if ($("panel").dataset.state !== "detail") listScroll = $("panel-main").scrollTop;
     state.selectedId = id;
-    topLayer.redraw();
     sitesLayer.redraw();
+    topLayer.redraw();
     updateConnector();
     $("results").querySelectorAll(".site-row").forEach((b) => {
       if (b.dataset.id === id) b.setAttribute("aria-current", "true"); else b.removeAttribute("aria-current");
@@ -1142,8 +1191,8 @@
     div.innerHTML = html || "";
     return div.textContent.trim();
   };
-  class Missing extends Error {}
-  const settle = (promise, fn) => promise.then(fn, fn);   // 자료가 원래 없음 (다시 시도해도 같음)
+  class Missing extends Error {}   // 자료가 원래 없음 (다시 시도해도 같음)
+  const settle = (promise, fn) => promise.then(fn, fn);   // 성공·실패 어느 쪽이든 fn 실행
 
   const fetchers = {
     async entity(wd) {
@@ -1167,7 +1216,7 @@
       const link = item.sitelinks?.kowiki || item.sitelinks?.enwiki;
       if (!link) throw new Missing();
       const lang = item.sitelinks?.kowiki ? "ko" : "en";
-      const res = await fetch(`https://${lang}.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(link.title)}`);
+      const res = await fetch(`https://${lang}.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(link.title.replace(/ /g, "_"))}`);
       if (res.status === 404) throw new Missing();
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const summary = await res.json();
@@ -1209,8 +1258,9 @@
       box.innerHTML = `<p>사진을 불러오는 중…</p>`;
     } else if (e.status === "ok" && !imgBroken.has(e.data.src)) {
       box.className = "d-photo";
+      const credit = `사진: ${esc(e.data.credit)}`;
       box.innerHTML = `<img src="${esc(e.data.src)}" alt="${esc(s.name)} 사진">
-        <p class="credit"><a href="${esc(e.data.href)}" target="_blank" rel="noopener">사진: ${esc(e.data.credit)}</a></p>`;
+        <p class="credit">${e.data.href ? `<a href="${esc(e.data.href)}" target="_blank" rel="noopener">${credit}</a>` : credit}</p>`;
       box.querySelector("img").addEventListener("error", () => {
         imgBroken.add(e.data.src);
         if (state.selectedId === s.id) renderPhoto(s);
@@ -1244,8 +1294,9 @@
       if (d.label && !s.ko.includes(d.label) && d.label !== s.name) {
         $("d-label").textContent = [...s.ko, d.label].join(" · ");
       }
+      const source = `${d.lang === "ko" ? "위키백과" : "영어 위키백과"}`;
       box.innerHTML = `<p class="d-about-text" lang="${d.lang}">${esc(d.text)}</p>
-        <p class="d-source"><a href="${esc(d.href)}" target="_blank" rel="noopener">${d.lang === "ko" ? "위키백과" : "영어 위키백과"}에서 더 읽기</a></p>`;
+        <p class="d-source">${d.href ? `<a href="${esc(d.href)}" target="_blank" rel="noopener">${source}에서 더 읽기</a>` : `출처: ${source}`}</p>`;
     } else if (e.status === "none") {
       box.innerHTML = `<p class="muted">위키백과 요약이 없어요.</p>`;
     } else {

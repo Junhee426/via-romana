@@ -33,7 +33,8 @@ window.ViaCanvasLayer = L.Layer.extend({
     if (!map) return;
     const size = map.getSize();
     const pad = size.multiplyBy(this.options.pad).round();
-    const dpr = window.devicePixelRatio || 1;
+    // 배율은 2배까지만: 3배 기기에서 화면보다 큰 캔버스 세 장이 수백 MB를 쓰지 않게
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
     const w = size.x + pad.x * 2;
     const h = size.y + pad.y * 2;
     const cv = this._canvas;

@@ -814,6 +814,51 @@ test("로마 배경이 기본이고 출처 표기가 남아 있다", async (brow
   assert.match(await text(page, ".leaflet-control-attribution"), /Esri/);
 });
 
+test("Google 저작권은 Google 타일을 볼 때만 붙고, 로마(CARTO) 배경에서는 빠진다", async (browser) => {
+  const page = await openPage(browser, {
+    beforeLoad: async (p) => {
+      await p.route("**/api/meta", async (r) => {
+        const res = await r.fetch();
+        const meta = await res.json();
+        await r.fulfill({ response: res, json: { ...meta, google_maps_key: "TESTKEY" } });
+      });
+      await p.route("https://tile.googleapis.com/**", (r) => {
+        const u = r.request().url();
+        if (u.includes("createSession")) return r.fulfill({ json: { session: `S-${JSON.parse(r.request().postData()).mapType}` } });
+        if (u.includes("viewport")) return r.fulfill({ json: { copyright: "Map data ©2026 Google" } });
+        return r.fulfill({ contentType: "image/png", body: PNG });
+      });
+    },
+  });
+  await page.waitForTimeout(500);
+  const credit = () => text(page, ".leaflet-control-attribution");
+  assert.equal(await page.getAttribute('.basemap [data-base="roman"]', "aria-pressed"), "true");
+  assert.doesNotMatch(await credit(), /Google/, "로마 배경(CARTO)에는 Google 저작권을 붙이지 않는다");
+  await page.click('.basemap [data-base="map"]');
+  await page.waitForFunction(() => /Google/.test(document.querySelector(".leaflet-control-attribution").textContent));
+  await page.click('.basemap [data-base="roman"]');
+  await page.waitForTimeout(300);
+  assert.doesNotMatch(await credit(), /Google/);
+  assert.match(await credit(), /CARTO/);
+});
+
+test("고배율 기기에서도 지도 캔버스는 2배까지만 만든다", async (browser) => {
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 3 });
+  const page = await context.newPage();
+  await page.route("https://cdnjs.cloudflare.com/**", (r) => r.request().url().endsWith(".js")
+    ? r.fulfill({ contentType: "text/javascript", body: LEAFLET_JS })
+    : r.fulfill({ contentType: "text/css", body: LEAFLET_CSS }));
+  await page.route(/fonts\.|cartocdn|arcgisonline|wiki/, (r) => r.fulfill({ contentType: "image/png", body: PNG }));
+  await page.goto(BASE + "/");
+  await waitReady(page);
+  const ratios = await page.$$eval("canvas.via-canvas", (cs) => cs.map((c) => c.width / parseFloat(c.style.width)));
+  assert.equal(ratios.length, 3);
+  for (const r of ratios) assert.ok(r <= 2.01, `캔버스 배율 ${r}`);
+  await page.evaluate(() => window.viaRomanaDebug.map.setView([41.9, 12.5], 7, { animate: false }));
+  await page.waitForTimeout(400);
+  assert.ok((await page.evaluate(() => window.viaRomanaDebug.drawStats())).drawn > 0);
+});
+
 for (const [vp, size] of Object.entries(VIEWPORTS)) {
   test(`레이아웃 ${size.width}×${size.height}: 가로 스크롤 없음, 주요 버튼 44px, 캡처`, async (browser) => {
     const page = await openPage(browser, { viewport: vp });
