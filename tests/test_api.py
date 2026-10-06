@@ -10,10 +10,14 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main import ALIASES, REGIONS, SITES, app, normalize
+from app.main import ALIASES, KO_NAMES, REGIONS, SITES, app, normalize
 
 ROOT = Path(__file__).resolve().parent.parent
 client = TestClient(app)
+# 건수는 데이터를 새로 만들면 바뀌므로 meta.json에서 읽는다
+META = json.loads((ROOT / "data/processed/meta.json").read_text(encoding="utf-8"))
+TOTAL = META["total"]
+BY_CAT = META["by_category"]
 
 
 def count(path, **params):
@@ -25,7 +29,8 @@ def count(path, **params):
 def test_healthz():
     r = client.get("/healthz")
     assert r.status_code == 200
-    assert r.json() == {"ok": True, "sites": 10580}
+    assert r.json() == {"ok": True, "sites": TOTAL}
+    assert TOTAL == len(SITES) == sum(BY_CAT.values()) > 0
 
 
 def test_static_assets_revalidate():
@@ -33,6 +38,33 @@ def test_static_assets_revalidate():
         r = client.get(path)
         assert r.status_code == 200
         assert r.headers["cache-control"] == "no-cache"
+
+
+def test_csp_only_on_map_page():
+    csp = client.get("/").headers["content-security-policy"]
+    assert "default-src 'self'" in csp and "script-src 'self' https://cdnjs.cloudflare.com;" in csp
+    assert "https://*.wikimedia.org" in csp   # 사진은 upload.·thumb. 두 호스트에서 온다
+    assert "content-security-policy" not in client.get("/docs").headers
+    assert "content-security-policy" not in client.get("/api/meta").headers
+
+
+def test_all_sites_is_cached_and_revalidates():
+    r = client.get("/api/sites", headers={"Accept-Encoding": "gzip"})
+    assert r.status_code == 200 and r.headers["content-encoding"] == "gzip"
+    assert r.headers["cache-control"] == "no-cache" and "accept-encoding" in r.headers["vary"].lower()
+    etag = r.headers["etag"]
+    assert len(r.json()["features"]) == TOTAL
+    again = client.get("/api/sites", headers={"Accept-Encoding": "gzip", "If-None-Match": etag})
+    assert again.status_code == 304 and again.content == b""
+    # 프록시가 약한 ETag(W/)로 바꿔 보내도 같은 것으로 본다
+    assert client.get("/api/sites", headers={"Accept-Encoding": "gzip", "If-None-Match": f"W/{etag}"}).status_code == 304
+    assert client.get("/api/sites", headers={"Accept-Encoding": "gzip", "If-None-Match": '"old"'}).status_code == 200
+    # 압축을 받지 않는 클라이언트는 원본을 받고 ETag도 다르다
+    plain = client.get("/api/sites", headers={"Accept-Encoding": "identity"})
+    assert "content-encoding" not in plain.headers and plain.headers["etag"] != etag
+    assert plain.json() == r.json()
+    # 필터가 있으면 미리 만든 본문을 쓰지 않는다
+    assert "etag" not in client.get("/api/sites", params={"cat": "arena"}).headers
 
 
 def test_meta_keeps_existing_fields_and_adds_regions():
@@ -47,11 +79,11 @@ def test_meta_keeps_existing_fields_and_adds_regions():
 
 
 def test_sites_unfiltered_and_filters():
-    assert count("/api/sites") == 10580
-    assert count("/api/sites", cat="arena") == 374
-    assert count("/api/sites", cat="arena,water") == 374 + 354
-    assert 0 < count("/api/sites", visible="true") < 10580
-    assert 0 < count("/api/sites", bbox="12.4,41.8,12.6,42.0") < 10580
+    assert count("/api/sites") == TOTAL
+    assert count("/api/sites", cat="arena") == BY_CAT["arena"]
+    assert count("/api/sites", cat="arena,water") == BY_CAT["arena"] + BY_CAT["water"]
+    assert 0 < count("/api/sites", visible="true") < TOTAL
+    assert 0 < count("/api/sites", bbox="12.4,41.8,12.6,42.0") < TOTAL
 
 
 def test_empty_cat_means_no_category_not_all():
@@ -61,6 +93,9 @@ def test_empty_cat_means_no_category_not_all():
 def test_unknown_category_and_bad_bbox_are_400():
     assert client.get("/api/sites", params={"cat": "nope"}).status_code == 400
     assert client.get("/api/sites", params={"bbox": "a,b"}).status_code == 400
+    assert client.get("/api/sites", params={"bbox": "nan,nan,nan,nan"}).status_code == 400
+    assert client.get("/api/sites", params={"bbox": "12.6,41.8,12.4,42.0"}).status_code == 400   # 서 > 동
+    assert client.get("/api/export.kml", params={"bbox": "12.4,42.0,12.6,41.8"}).status_code == 400  # 남 > 북
 
 
 def test_original_geojson_names_and_ids_unchanged():
@@ -68,7 +103,7 @@ def test_original_geojson_names_and_ids_unchanged():
     served = client.get("/api/sites").json()["features"]
     assert [f["properties"]["id"] for f in served] == [f["properties"]["id"] for f in data["features"]]
     assert [f["properties"]["name"] for f in served] == [f["properties"]["name"] for f in data["features"]]
-    assert "ko" not in data["features"][0]["properties"]
+    assert not any("ko" in f["properties"] for f in data["features"])
 
 
 @pytest.mark.parametrize("q,expected_id", [
@@ -97,7 +132,25 @@ def test_aliases_are_verified_and_served():
     curated = json.loads((ROOT / "data/curated.json").read_text(encoding="utf-8"))
     assert len(ALIASES) == len(curated["aliases"]), "모든 별칭의 id·name이 실제 데이터와 맞아야 한다"
     colosseum = client.get("/api/sites", params={"q": "콜로세움"}).json()["features"][0]
-    assert colosseum["properties"]["ko"] == ["콜로세움", "콜로세오"]
+    assert colosseum["properties"]["ko"] == ["콜로세움", "콜로세오"]   # Wikidata 라벨 '콜로세움'은 겹치므로 한 번만
+
+
+def test_wikidata_korean_labels_and_links():
+    """빌드 때 받아 둔 Wikidata 한국어 라벨로도 찾을 수 있고, 응답에는 ko 하나로 모아서 준다."""
+    labelled = [f["properties"] for f in SITES if f["properties"].get("ko_label")]
+    assert len(labelled) == META["with_ko_label"] > 100
+    assert all(p["wd"] and "links" in p for p in labelled)
+    assert all(isinstance(f["properties"]["links"], int) for f in SITES if f["properties"]["wd"])
+    assert not any("links" in f["properties"] for f in SITES if not f["properties"]["wd"])
+    # 별칭이 없는 유적도 Wikidata 한국어 라벨로 검색된다
+    p = next(p for p in labelled if p["id"] not in ALIASES)
+    found = client.get("/api/sites", params={"q": p["ko_label"]}).json()["features"]
+    hit = next(f["properties"] for f in found if f["properties"]["id"] == p["id"])
+    assert hit["ko"] == [p["ko_label"]] and "ko_label" not in hit
+    # 유명한 곳은 위키백과 언어판이 많다 (지도에서 겹칠 때 우선순위로 쓴다)
+    by_id = {f["properties"]["id"]: f["properties"] for f in SITES}
+    assert by_id["285857974"]["links"] >= 50
+    assert set(ALIASES) <= set(KO_NAMES)
 
 
 def test_regions_have_sites_nearby():
@@ -143,7 +196,9 @@ def test_normalize_rules():
 
 
 def test_site_detail():
-    assert client.get("/api/sites/285857974").json()["properties"]["name"] == "Amphitheatrum Flavium"
+    props = client.get("/api/sites/285857974").json()["properties"]
+    assert props["name"] == "Amphitheatrum Flavium"
+    assert props["ko"] == ["콜로세움", "콜로세오"]   # 목록 API와 같은 한국어 이름
     assert client.get("/api/sites/0").status_code == 404
 
 

@@ -1,0 +1,4 @@
+# 테스트용 (배포에는 requirements.txt만 쓴다)
+-r requirements.txt
+pytest==9.1.1
+httpx==0.28.1

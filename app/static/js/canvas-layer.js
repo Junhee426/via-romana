@@ -33,8 +33,7 @@ window.ViaCanvasLayer = L.Layer.extend({
     if (!map) return;
     const size = map.getSize();
     const pad = size.multiplyBy(this.options.pad).round();
-    // 배율은 2배까지만: 3배 기기에서 화면보다 큰 캔버스 세 장이 수백 MB를 쓰지 않게
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const dpr = window.ViaCanvasLayer.dpr();
     const w = size.x + pad.x * 2;
     const h = size.y + pad.y * 2;
     const cv = this._canvas;
@@ -61,3 +60,7 @@ window.ViaCanvasLayer = L.Layer.extend({
     this.options.draw(ctx, v);
   },
 });
+
+// 캔버스 배율. 2배까지만: 3배 기기에서 화면보다 큰 캔버스 세 장이 수백 MB를 쓰지 않게.
+// 미리 그려 두는 배지(app.js)도 이 값으로 만들어야 캔버스에 1:1로 찍힌다
+window.ViaCanvasLayer.dpr = () => Math.min(2, window.devicePixelRatio || 1);

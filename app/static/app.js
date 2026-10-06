@@ -26,6 +26,11 @@
   ));
   const fmt = new Intl.NumberFormat("ko-KR");
   const year = (y) => (y < 0 ? `기원전 ${-y}년` : `${y}년`);
+  // Pleiades에 제목이 없는 곳("Untitled")은 화면에서만 바꿔 보여 준다 (데이터의 name은 그대로)
+  const UNTITLED = "Untitled";
+  const shownName = (s) => (s.name === UNTITLED ? "이름 없는 유적" : s.name);
+  // 위키백과 언어판이 이 수 이상이면 널리 알려진 곳으로 보고, 지도에서 겹칠 때 먼저 그린다
+  const FAMOUS_LINKS = 20;
   const narrowMq = window.matchMedia("(max-width: 899px)");
   const reduceMq = window.matchMedia("(prefers-reduced-motion: reduce)");
   const isNarrow = () => narrowMq.matches;
@@ -65,10 +70,23 @@
     march: null,               // { center, layers, status, result }
   };
 
+  // ── 공유 주소 ────────────────────────────────
+  // 주소의 #map=줌/위도/경도&site=ID 에 지도 위치와 열려 있는 상세를 적어 둔다. 주소를 복사해 열면 같은 화면이 된다
+  function readHash() {
+    const params = new URLSearchParams(location.hash.slice(1));
+    const m = (params.get("map") || "").split("/").map(Number);
+    const ok = m.length === 3 && m.every(Number.isFinite) && Math.abs(m[1]) <= 90 && Math.abs(m[2]) <= 180;
+    return {
+      view: ok ? { center: [m[1], m[2]], zoom: Math.min(19, Math.max(3, Math.round(m[0]))) } : null,
+      site: params.get("site"),
+    };
+  }
+  const startAt = readHash();
+
   // ── 지도·배경 ────────────────────────────────
   const map = L.map("map", {
-    center: [45.5, 10.5],
-    zoom: 5,
+    center: startAt.view?.center || [45.5, 10.5],
+    zoom: startAt.view?.zoom || 5,
     minZoom: 3,
     zoomControl: false,
     preferCanvas: true,
@@ -285,6 +303,7 @@
       iconsReq.then(prepareBadges);
       setPhase("ready");
       refresh({ announceCount: false });
+      openLinkedSite(startAt);
     } catch (err) {
       if (ctl !== loadCtl || err.name === "AbortError") return;
       console.error("유적 데이터를 적용하지 못했습니다.", err);
@@ -330,8 +349,14 @@
   // 유적은 한 번만 만든다. 이미 있으면(재시도 경쟁 등) 건너뛴다
   function applySites(features) {
     if (state.sites.length) return;
+    let visibleCount = 0;
     for (const f of features) {
       const p = f.properties;
+      const links = p.links || 0;
+      const seen = VISIBLE.has(p.remains);
+      if (seen) visibleCount++;
+      // 겹칠 때 우선순위 단계: 널리 알려진 곳 → 남아 있음+Wikidata → 남아 있음 → Wikidata → 나머지
+      const tier = links >= FAMOUS_LINKS ? 0 : seen ? (p.wd ? 1 : 2) : (p.wd ? 3 : 4);
       const site = {
         ...p,
         ko: p.ko || [],
@@ -340,11 +365,13 @@
         nameText: normalize([p.name, ...(p.ko || [])].join(" ")),
         // 줌 0 기준 투영 좌표: 그릴 때 2^zoom만 곱하면 되도록 한 번만 계산
         p0: map.project([f.geometry.coordinates[1], f.geometry.coordinates[0]], 0),
-        prio: VISIBLE.has(p.remains) ? (p.wd ? 1 : 2) : (p.wd ? 3 : 4),
+        // 작을수록 먼저. 같은 단계 안에서는 위키백과 언어판이 많은 순
+        prio: tier + 0.999 - Math.min(links, 998) / 1000,
       };
       state.sites.push(site);
       state.byId.set(site.id, site);
     }
+    $("visible-count").textContent = `(${fmt.format(visibleCount)}곳)`;
   }
 
   // ── 필터 (지도·목록·건수·내보내기 공통) ─────────
@@ -371,7 +398,7 @@
     const total = state.meta.categories.length;
     const on = state.filter.active.size;
     const cats = on === total ? "모든 분류" : on === 0 ? "분류 모두 꺼짐" : `분류 ${on}/${total}`;
-    return state.filter.visibleOnly ? `${cats} · 남아 있는 곳만` : cats;
+    return state.filter.visibleOnly ? `${cats} · 남아 있다고 기록된 곳만` : cats;
   }
 
   function buildChips() {
@@ -483,8 +510,8 @@
 
   // 높은 줌 배지: B(밝은 바탕 + 분류 색 윤곽)가 기본. ?badge=a 로 A(분류 색 바탕)와 비교할 수 있다
   const OUTLINE_STYLE = new URLSearchParams(location.search).get("badge") === "a" ? "A" : "B";
-  // 캔버스 배율은 2배까지만 (고배율 기기에서 캔버스 메모리가 너무 커지지 않게). js/canvas-layer.js와 같은 값
-  const DPR = () => Math.min(2, Math.round((window.devicePixelRatio || 1) * 2) / 2);
+  // 배지도 지도 캔버스와 같은 배율로 만든다 (js/canvas-layer.js)
+  const DPR = ViaCanvasLayer.dpr;
   let badgesReady = false;
   let preparing = null;
 
@@ -593,7 +620,8 @@
   }
 
   // 겹치는 배지는 우선순위가 높은 것만 남긴다
-  //   행군 반경 안 → 남아 있음+Wikidata → 남아 있음 → Wikidata → 나머지 (역사적 중요도를 지어내지 않음)
+  //   행군 반경 안 → 널리 알려진 곳(위키백과 언어판 수) → 남아 있음+Wikidata → 남아 있음 → Wikidata → 나머지
+  //   (중요도를 지어내지 않고 데이터에 있는 값만 쓴다)
   function layoutSites(v, mode, at) {
     const kind = iconKind(mode);
     const badge = ViaIcons.SIZES[kind].badge;
@@ -606,7 +634,7 @@
       const p = at(s);
       if (p.x < v.min.x - badge || p.y < v.min.y - badge || p.x > v.max.x + badge || p.y > v.max.y + badge) continue;
       if (p.x >= 0 && p.y >= 0 && p.x <= v.size.x && p.y <= v.size.y) inView++;
-      cand.push({ s, x: p.x, y: p.y, pr: march?.has(s.id) ? 0 : s.prio });
+      cand.push({ s, x: p.x, y: p.y, pr: march?.has(s.id) ? -1 : s.prio });
     }
     cand.sort((a, b) => a.pr - b.pr);
     const min = badge * 0.8;
@@ -675,7 +703,7 @@
     },
   }).addTo(map);
 
-  // 선택 강조와 라벨 (줌 12 이상에서만, 우선순위: 선택 → 목록에서 가리킨 곳 → 남아 있음 → Wikidata 연결)
+  // 선택 강조와 라벨 (줌 12 이상에서만, 우선순위: 선택 → 목록에서 가리킨 곳 → 널리 알려진 곳 → 남아 있음 → Wikidata 연결)
   const LABEL_MAX = 36;
   const topLayer = new ViaCanvasLayer({
     pane: "top",
@@ -717,7 +745,8 @@
       const cand = [];
       if (sel) cand.push(sel);
       if (focus) cand.push(focus);
-      const rest = hits.map((h) => h.site).filter((s) => s !== sel && s !== focus && (VISIBLE.has(s.remains) || s.wd));
+      const rest = hits.map((h) => h.site)
+        .filter((s) => s !== sel && s !== focus && s.name !== UNTITLED && (VISIBLE.has(s.remains) || s.wd));
       rest.sort((a, b) => a.prio - b.prio);
       cand.push(...rest);
       ctx.font = '500 12px "IBM Plex Sans KR", system-ui, sans-serif';
@@ -732,7 +761,7 @@
         if (drawStats.labels >= LABEL_MAX) break;
         const p = at(s);
         if (p.x < 0 || p.y < 0 || p.x > v.size.x || p.y > v.size.y) continue;
-        let text = s.ko[0] || s.name;
+        let text = s.ko[0] || shownName(s);
         if (text.length > 30) text = `${text.slice(0, 29)}…`;
         const w = ctx.measureText(text).width;
         const box = { x: p.x + r + 5, y: p.y - 9, w: w + 6, h: 18 };
@@ -754,6 +783,8 @@
     sitesLayer.redraw();
     topLayer.redraw();
   }
+  // 웹폰트가 늦게 도착하면 라벨을 그 글꼴로 다시 그린다
+  document.fonts?.ready.then(() => topLayer.redraw());
 
   // 지도 클릭: 표식을 누르면 선택, 저배율 점 근처를 누르면 그곳으로 두 단계 확대
   function hitAt(pt) {
@@ -913,6 +944,7 @@
     renderCounts();
     if (state.scope === "view") { state.shownCount = PAGE; renderList(); }
     renderExportScope();
+    syncUrl();
   });
 
   function renderCounts() {
@@ -996,7 +1028,7 @@
         : `<span class="dist">출발점에서 ${distance.toFixed(1)}km<br>(${(distance / mile).toFixed(1)} 로마마일)</span>`;
       return `<li><button type="button" class="site-row" data-id="${esc(s.id)}"${s.id === state.selectedId ? ' aria-current="true"' : ""} style="--c:${cat.color}">
         <span class="row-ico">${ViaIcons.use("glyph", s.cat)}</span>
-        <span class="row-main"><span class="name">${esc(s.name)}</span>${ko}
+        <span class="row-main"><span class="name">${esc(shownName(s))}</span>${ko}
           <span class="row-meta">${esc(cat.label)} · ${esc(REMAINS_LABEL[s.remains] || REMAINS_LABEL.unknown)}</span></span>
         ${dist}
       </button></li>`;
@@ -1036,7 +1068,7 @@
     } else if (last.matched.length === 0) {
       html = `<p>${q ? `‘${esc(q)}’에 맞는 유적이 없어요.` : "조건에 맞는 유적이 없어요."} 이름은 원래 표기(라틴어·현지어)나 일부 한국어 이름으로 찾을 수 있어요.</p>`
         + (q ? `<button type="button" class="btn" data-fix="clear-q">검색어 지우기</button>` : "")
-        + (state.filter.visibleOnly ? `<button type="button" class="btn" data-fix="visible-off">남아 있는 곳만 보기 끄기</button>` : "")
+        + (state.filter.visibleOnly ? `<button type="button" class="btn" data-fix="visible-off">‘남아 있다고 기록된 곳만’ 끄기</button>` : "")
         + (!allCatsOn() ? `<button type="button" class="btn" data-fix="cats-on">모든 분류 켜기</button>` : "");
     } else if (state.scope === "march") {
       html = `<p>행군 반경 안에는 조건에 맞는 유적이 없어요. 조건에 맞는 유적은 전체 ${fmt.format(last.matched.length)}곳이에요.</p>`
@@ -1092,7 +1124,8 @@
   // ── 선택·상세 ────────────────────────────────
   let listScroll = 0;
 
-  function selectSite(id, { from } = {}) {
+  // from: "map"(지도에서 누름) | "list"(목록에서 고름) | "link"(공유 주소로 열림)
+  function selectSite(id, { from, keepZoom = from === "map" } = {}) {
     const site = state.byId.get(id);
     if (!site) return;
     if (state.picking) stopPicking();
@@ -1108,7 +1141,39 @@
     setPanel("detail", { focus: from !== "map" });
     const [lon, lat] = site.coordinates;
     // 지도에서 누른 경우는 이미 보이는 자리이므로 필요할 때만, 목록에서 고른 경우는 확대해서 보여 준다
-    bringIntoView(L.latLng(lat, lon), from === "map" ? map.getZoom() : 12);
+    bringIntoView(L.latLng(lat, lon), keepZoom ? map.getZoom() : 12);
+  }
+
+  // 지금 화면을 주소에 적는다 (기록을 쌓지 않고 현재 주소만 바꾼다). 상세가 열려 있을 때만 유적을 적는다
+  function syncUrl() {
+    if (state.phase !== "ready") return;
+    const c = map.getCenter().wrap();
+    const parts = [`map=${map.getZoom()}/${c.lat.toFixed(4)}/${c.lng.toFixed(4)}`];
+    if ($("panel").dataset.state === "detail" && state.selectedId) parts.push(`site=${encodeURIComponent(state.selectedId)}`);
+    const hash = `#${parts.join("&")}`;
+    if (hash !== location.hash) history.replaceState(null, "", hash);
+  }
+
+  // 주소에 적힌 유적을 연다. 주소에 지도 위치도 있으면 그 줌을 그대로 둔다
+  function openLinkedSite({ view, site }) {
+    if (site && state.byId.has(site)) selectSite(site, { from: "link", keepZoom: !!view });
+  }
+  // 같은 탭에서 다른 공유 주소를 붙여 넣은 경우
+  window.addEventListener("hashchange", () => {
+    const next = readHash();
+    if (next.view) map.setView(next.view.center, next.view.zoom, { animate: false });
+    if (state.phase === "ready") openLinkedSite(next);
+  });
+
+  async function copyLink() {
+    syncUrl();
+    const status = $("d-share-status");
+    try {
+      await navigator.clipboard.writeText(location.href);
+      status.textContent = "링크를 복사했어요.";
+    } catch {
+      status.textContent = "복사하지 못했어요. 주소창의 주소를 복사해 주세요.";
+    }
   }
 
   function backToList() {
@@ -1146,7 +1211,7 @@
     const visible = VISIBLE.has(s.remains);
     $("detail").innerHTML = `
       <div class="d-photo" id="d-photo"></div>
-      <h2 class="d-name" id="detail-name" tabindex="-1">${esc(s.name)}</h2>
+      <h2 class="d-name" id="detail-name" tabindex="-1">${esc(shownName(s))}</h2>
       <p class="d-label" id="d-label">${esc(s.ko.join(" · "))}</p>
       <p class="d-cat" style="--c:${cat.color}">${ViaIcons.use("outline", s.cat, "d-cat-ico")}<span>${esc(cat.label)}</span></p>
       ${periodBar(s)}
@@ -1159,8 +1224,10 @@
         <a class="btn" href="https://www.google.com/maps/search/?api=1&query=${lat},${lon}" target="_blank" rel="noopener">구글맵</a>
         <a class="btn" href="https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}" target="_blank" rel="noopener">길찾기</a>
       </div>
-      <p class="d-links"><a href="https://pleiades.stoa.org/places/${encodeURIComponent(s.id)}" target="_blank" rel="noopener">Pleiades에서 보기 (ID ${esc(s.id)})</a></p>`;
+      <p class="d-links"><a href="https://pleiades.stoa.org/places/${encodeURIComponent(s.id)}" target="_blank" rel="noopener">Pleiades에서 보기 (ID ${esc(s.id)})</a></p>
+      <p class="d-share"><button type="button" class="link" id="d-share">이 유적 링크 복사</button> <span class="muted-inline" id="d-share-status" role="status"></span></p>`;
     $("d-explore").addEventListener("click", () => exploreAround(s));
+    $("d-share").addEventListener("click", copyLink);
     renderPhoto(s);
     renderAbout(s);
     if (s.wd) {
@@ -1186,11 +1253,8 @@
   const parts = { entity: new Map(), photo: new Map(), about: new Map() };   // wd → { status, data, promise }
   const imgBroken = new Set();   // 파일 자체를 못 받은 사진 주소
 
-  const stripTags = (html) => {
-    const div = document.createElement("div");
-    div.innerHTML = html || "";
-    return div.textContent.trim();
-  };
+  // 외부에서 온 HTML은 DOMParser로 읽는다: 문서에 붙지 않아 이미지 요청이나 이벤트 핸들러가 실행되지 않는다
+  const stripTags = (html) => new DOMParser().parseFromString(html || "", "text/html").body.textContent.trim();
   class Missing extends Error {}   // 자료가 원래 없음 (다시 시도해도 같음)
   const settle = (promise, fn) => promise.then(fn, fn);   // 성공·실패 어느 쪽이든 fn 실행
 
@@ -1259,7 +1323,7 @@
     } else if (e.status === "ok" && !imgBroken.has(e.data.src)) {
       box.className = "d-photo";
       const credit = `사진: ${esc(e.data.credit)}`;
-      box.innerHTML = `<img src="${esc(e.data.src)}" alt="${esc(s.name)} 사진">
+      box.innerHTML = `<img src="${esc(e.data.src)}" alt="${esc(shownName(s))} 사진">
         <p class="credit">${e.data.href ? `<a href="${esc(e.data.href)}" target="_blank" rel="noopener">${credit}</a>` : credit}</p>`;
       box.querySelector("img").addEventListener("error", () => {
         imgBroken.add(e.data.src);
@@ -1612,6 +1676,7 @@
     if (s === "detail" && focus) $("detail-name")?.focus({ preventScroll: true });
     if (s === "detail") $("panel-main").scrollTop = 0;
     renderCounts();
+    syncUrl();
   }
 
   $("panel-handle").addEventListener("click", () => {

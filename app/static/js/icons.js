@@ -100,7 +100,7 @@ window.ViaIcons = (() => {
         ]).then(([fg, halo]) => {
           const pad = 2 * dpr;
           const cv = document.createElement("canvas");
-          cv.width = cv.height = icon * dpr + pad * 2;
+          cv.width = cv.height = Math.ceil(icon * dpr + pad * 2);   // 배율이 1.25처럼 정수가 아니어도 잘리지 않게
           const ctx = cv.getContext("2d");
           const h = 1.25 * dpr;
           for (const [dx, dy] of [[-h, 0], [h, 0], [0, -h], [0, h], [-h, -h], [h, h], [-h, h], [h, -h]]) {
@@ -114,7 +114,7 @@ window.ViaIcons = (() => {
         const { badge, icon } = SIZES.outline;
         const light = outlineStyle === "B";
         jobs.push(svgImage(text[`outline/${cat}`], icon * dpr, light ? color : MARBLE, null).then((img) => {
-          const px = (badge + 2) * dpr;
+          const px = Math.ceil((badge + 2) * dpr);
           const cv = document.createElement("canvas");
           cv.width = cv.height = px;
           const ctx = cv.getContext("2d");

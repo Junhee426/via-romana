@@ -1,5 +1,6 @@
 {
   "built_at": "2026-09-29T23:04:58+00:00",
+  "wikidata_at": "2026-10-06T00:05:15+00:00",
   "total": 10580,
   "by_category": {
     "arena": 374,
@@ -17,6 +18,7 @@
     400
   ],
   "with_wikidata": 4099,
+  "with_ko_label": 425,
   "sources": [
     {
       "name": "Pleiades",

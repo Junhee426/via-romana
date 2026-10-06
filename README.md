@@ -9,11 +9,12 @@
 - [Pleiades](https://pleiades.stoa.org) 기반 유럽 로마 유적 약 1만 곳, 9개 분류
 - **고고학 아이콘**: 분류마다 채움형(glyph)·윤곽형(outline) SVG 두 벌, 확대할수록 분류 색 점 → 실루엣 → 윤곽형 배지 → 윤곽형+이름으로 정보가 늘어난다
 - **박물관 카드**: 유적을 고르면 사진 → 이름 → 분류 아이콘 → 존속 기간 막대 → 남은 정도 → 설명 → 행동 순서의 상세
-- **검색**: 상단 검색창에서 유적 이름·Pleiades 설명·Pleiades ID로 찾는다. 대소문자·공백·악센트를 무시하고(`nimes` → Arènes de Nîmes), 확인된 한국어 별칭 20곳(`콜로세움`, `퐁 뒤 가르` 등)도 찾는다
+- **검색**: 상단 검색창에서 유적 이름·Pleiades 설명·Pleiades ID로 찾는다. 대소문자·공백·악센트를 무시하고(`nimes` → Arènes de Nîmes), 한국어 이름으로도 찾는다: 손으로 확인한 별칭 20곳(`콜로세움`, `퐁 뒤 가르` 등)과 Wikidata 한국어 라벨 425곳(`바르셀로나` → Col. Barcino, `카라칼라 욕장` 등)
+- **공유 주소**: 지도 위치와 열려 있는 유적 상세가 주소(`#map=줌/위도/경도&site=ID`)에 남는다. 주소를 복사하거나 상세의 "이 유적 링크 복사"로 보내면 같은 화면이 열린다
 - **시작 지역**: 로마, 폼페이·나폴리만, 프로방스, 트리어, 스플리트·살로나, 메리다, 바스로 바로 이동
 - **지도와 동기화된 목록**: 하루 행군 없이도 "지금 지도 범위" 목록을 보고, "전체"·"행군 반경"으로 범위를 바꿀 수 있다. 목록·지도 마커 어느 쪽에서 골라도 같은 상세가 열린다
 - **건수 구분**: 조건 일치 N곳(전체 데이터) · 지금 지도 범위 M곳 · 행군 반경 K곳을 따로 보여 준다
-- 분류별 켜기·끄기, 유적이 남아 있는 곳만 보기 (남아 있음 = 보존 상태이지 개방·입장 가능 여부가 아님)
+- 분류별 켜기·끄기, 남아 있다고 기록된 곳만 보기 (Pleiades 기록 기준이라 전체의 14%인 1,494곳뿐이고, 콜로세움처럼 기록이 비어 있는 유명 유적은 빠진다. 남아 있음 = 보존 상태이지 개방·입장 가능 여부가 아님)
 - **하루 행군**: 출발점(지도·지도 중심·현재 위치·상세의 "이곳 주변 탐색")에서 20 로마마일 ≈ 29.6km 직선 반경 안의 유적을 가까운 순으로. 실제 도보 거리나 고대 가도 경로가 아니다
 - **상세**: 사진·위키백과 요약(한국어 우선, 없으면 영어)·Pleiades 설명, "이곳 주변 탐색"·"구글맵"·"길찾기"
 - 로마·지도·위성 배경 전환. "로마"(기본)는 현대 지명을 뺀 지도를 양피지 톤으로 바꾼 것 (Google 지도 키가 있으면 "지도"·"위성"은 Google 지도)
@@ -58,10 +59,11 @@
 | 3–5 | Dots | 유적마다 분류 색 점 하나(반지름 1.2–2.1px). 격자로 묶지 않아 가도·해안을 따라 늘어선 실제 분포가 로마 세계의 윤곽처럼 드러난다. 남아 있는 유적은 진하게. 점 근처를 누르면 두 단계 확대 |
 | 6–8 | Glyph | 원 없는 분류 색 실루엣(14px) + 대리석색 테두리. 라벨 없음 |
 | 9–11 | Outline | 작은 밝은 원 배지(22px) + 윤곽형 아이콘(14px) |
-| 12+ | Outline + Label | 윤곽형 + 이름 최대 36개. 라벨 우선순위: 선택 → 목록에서 가리킨 곳 → 남아 있음 → Wikidata 연결. 라벨끼리·다른 배지와 겹치면 생략 |
+| 12+ | Outline + Label | 윤곽형 + 이름 최대 36개(한국어 이름이 있으면 그것으로). 라벨 우선순위: 선택 → 목록에서 가리킨 곳 → 널리 알려진 곳 → 남아 있음 → Wikidata 연결. 라벨끼리·다른 배지와 겹치면 생략 |
 
 - 단계는 `visualizationModeForZoom(zoom)` 하나로 정한다. 범례의 "확대 단계"가 지금 단계를 표시한다
-- 배지가 겹치면 우선순위가 높은 것만 그린다: 행군 반경 안 → 남아 있음+Wikidata → 남아 있음 → Wikidata → 나머지. 데이터에 없는 역사적 중요도는 만들지 않는다. 겹쳐서 생략된 수는 범례에 "겹친 N곳은 확대하면 보여요"로 알린다
+- 배지가 겹치면 우선순위가 높은 것만 그린다: 행군 반경 안 → 널리 알려진 곳 → 남아 있음+Wikidata → 남아 있음 → Wikidata → 나머지. 같은 단계 안에서는 위키백과 언어판이 많은 순. 겹쳐서 생략된 수는 범례에 "겹친 N곳은 확대하면 보여요"로 알린다
+- "널리 알려진 곳"은 그 유적의 Wikidata 항목에 위키백과 문서가 20개 언어 이상 있는 곳(632곳)이다. Pleiades에는 남은 정도 기록이 84%나 비어 있어서(콜로세움·폼페이 포함) 그것만으로는 유명한 유적이 무명 유적에 밀렸다. 역사적 중요도를 지어내지 않고 데이터에 있는 값만 쓴다. 고대 도시는 지금의 도시 항목에 연결된 경우가 많아, 이 수는 "그 자리가 지금 얼마나 알려져 있는가"에 가깝다
 - 진한 배지는 유적이 남아 있는 곳, 흐린 배지는 남은 정도 정보가 없거나 지표에서 보이지 않는 곳
 - 선택한 유적은 모든 단계에서 1.18배 배지 + 테두리 두 겹으로 보인다
 - glyph ↔ outline은 140ms 겹쳐 바뀐다(모양 모핑은 하지 않음). `prefers-reduced-motion`이면 바로 바뀌고 지도 이동 애니메이션도 끈다
@@ -85,6 +87,7 @@
 - 유적 1만 곳에 DOM 마커를 만들지 않는다. `app/static/js/canvas-layer.js`의 캔버스 레이어 두 장(유적, 선택·라벨)에 그린다. 화면보다 35% 큰 캔버스를 이동이 끝날 때(`moveend`)만 다시 그린다
 - 분류 배지 18종(9 × glyph·outline)은 한 번만 래스터화해 두고 `drawImage`로 찍는다. 아이콘 SVG 요청은 18번뿐이다
 - 각 유적의 줌 0 투영 좌표를 한 번만 계산해 두고, 그릴 때 2^zoom만 곱한다
+- 전체 유적 목록(`/api/sites`, 필터 없음)은 서버가 시작할 때 한 번만 직렬화·gzip 해 두고 내용 해시를 `ETag`로 쓴다. 요청마다 0.45–0.9초 걸리던 응답이 2–3ms가 되고(로컬 측정), 다시 방문하면 580KB 대신 304(본문 없음)로 끝난다
 - 레이어 순서(아래 → 위): BASE → DENSITY(점) → ROADS(향후 Itiner-e 가도용, 지금은 빈 pane) → SITES → MARCH → TOP(선택·라벨)
 - 측정(1366×768, 헤드리스 Chromium, 두 번 실행): 한 번 그리는 데 점 단계(줌 4–5, 점 10,580개, 분류 색마다 Path2D 하나로 모아 칠함) 5.6–14.2ms, 줌 7 이탈리아 화면(실루엣 731개, 겹쳐서 생략 1,894곳) 9.3–9.4ms, 줌 10(202개) 1.3–2.6ms, 줌 13(127개 + 라벨 27개) 1.8–2.2ms
 
@@ -108,8 +111,10 @@ via-romana/
 │   ├── test_api.py      # API 회귀 테스트 (pytest)
 │   ├── e2e/run.mjs      # 브라우저 회귀 테스트 (Playwright, 외부 요청은 가짜 응답)
 │   └── e2e/icons.mjs    # 아이콘 품질·실루엣 검사
+├── .github/workflows/tests.yml   # 푸시마다 pytest + 브라우저 테스트
 ├── render.yaml          # Render 배포 설정
-└── requirements.txt
+├── requirements.txt
+└── requirements-dev.txt # 테스트용 (pytest, httpx)
 ```
 
 ## 로컬 실행
@@ -126,13 +131,15 @@ uvicorn app.main:app --reload
 ### 테스트
 
 ```bash
-pip install pytest httpx
+pip install -r requirements-dev.txt
 python -m pytest tests                 # API·/healthz 회귀 테스트
 
 cd tests && npm install                # Leaflet·Playwright (브라우저는 따로 설치: npx playwright install chromium)
 VIA_PYTHON=../.venv/bin/python npm run e2e          # 브라우저 회귀 테스트 전체
 VIA_PYTHON=../.venv/bin/python npm run e2e -- KML   # 이름에 'KML'이 들어간 테스트만
 ```
+
+`VIA_PYTHON`에 경로를 주면 `tests/` 기준으로 읽는다(Windows는 `../.venv/Scripts/python.exe`). GitHub에 푸시하면 같은 두 테스트가 Actions에서 돈다.
 
 브라우저 테스트는 지도 타일·글꼴·Wikidata·위키백과·위키미디어 공용 요청을 모두 가짜 응답으로 바꿔서, 외부 서비스 상태와 상관없이 같은 결과가 나온다(타일은 옅은 격자 무늬로 대체되므로 캡처의 배경은 실제 지도가 아니다). 1920×1080, 1366×768, 390×844, 360×800 화면과 줌 4·7·10·13 캡처, 아이콘 시트는 `tests/e2e/screenshots/`에 남는다(git 제외).
 
@@ -141,6 +148,7 @@ VIA_PYTHON=../.venv/bin/python npm run e2e -- KML   # 이름에 'KML'이 들어�
 ```bash
 python scripts/build_sites.py            # 원본이 없으면 내려받음 (약 38MB)
 python scripts/build_sites.py --refresh  # 원본을 새로 받아서 다시 가공
+python scripts/build_sites.py --wikidata-only  # 유적 목록은 그대로 두고 Wikidata 한국어 라벨·위키백과 수만 새로 받음 (요청 약 80번)
 ```
 
 ## API
@@ -148,8 +156,8 @@ python scripts/build_sites.py --refresh  # 원본을 새로 받아서 다시 가
 | 경로 | 설명 |
 |---|---|
 | `GET /api/meta` | 분류 목록(이름·색·건수), 출처, 하루 행군 거리, 시작 지역(`regions`), 데이터 범위(`extent`: 서·남·동·북) |
-| `GET /api/sites?cat=arena,water&visible=true&bbox=서,남,동,북&q=검색어` | 유적 GeoJSON. 확인된 한국어 별칭이 있으면 `ko` 속성 |
-| `GET /api/sites/{id}` | 유적 하나 (id는 Pleiades ID) |
+| `GET /api/sites?cat=arena,water&visible=true&bbox=서,남,동,북&q=검색어` | 유적 GeoJSON. 한국어 이름(확인된 별칭 → Wikidata 라벨 순)이 있으면 `ko` 속성, Wikidata 연결이 있으면 `links`(위키백과 언어판 수). 파라미터가 없으면 미리 만든 본문을 `ETag`와 함께 주고 `If-None-Match`가 맞으면 304 |
+| `GET /api/sites/{id}` | 유적 하나 (id는 Pleiades ID, 목록과 같은 `ko`) |
 | `GET /api/near?lat=43.84&lon=4.36&km=29.6&q=…` | 반경 안 유적, 가까운 순 |
 | `GET /api/export.kml?bbox=서,남,동,북` 또는 `?lat=…&lon=…&km=…` | Google 내 지도용 KML (최대 2,000곳, `cat`·`visible`·`q` 필터 가능). 0곳이면 404, 상한 초과면 400 |
 | `GET /healthz` | 상태 확인 (Render 헬스체크) |
@@ -157,6 +165,7 @@ python scripts/build_sites.py --refresh  # 원본을 새로 받아서 다시 가
 공통 규칙
 - `q`: 이름·Pleiades 설명·한국어 별칭을 정규화(악센트 제거, 소문자, 공백 정리)해서, 검색어의 모든 단어가 들어 있는 유적. 브라우저의 `normalize()`와 서버의 `normalize()`가 같은 규칙을 쓴다
 - `cat`: 생략하면 모든 분류, **빈 값(`cat=`)이면 아무 분류도 아님(0곳)**. 화면에서 분류를 모두 끄면 API를 부르지 않는다
+- `bbox`: 서 ≤ 동, 남 ≤ 북인 유한한 숫자 네 개. 아니면 400
 
 분류 키: `arena` 원형극장·극장, `water` 수도교·목욕탕, `military` 요새·성벽, `sacred` 신전·성소, `villa` 빌라, `road` 다리·도로 시설, `burial` 무덤·기념물, `industry` 광산·항구·생산지, `town` 도시·정착지
 
@@ -191,6 +200,10 @@ CARTO 지도는 키 없이 쓰면 타일에 "API key required" 워터마크가 �
 
 무료 플랜은 한동안 접속이 없으면 잠들었다가, 다음 접속 때 깨어나느라 첫 로딩이 느릴 수 있다.
 
+### 보안 헤더
+
+지도 페이지에는 `Content-Security-Policy`가 붙는다(`app/main.py`의 `CSP`). 스크립트는 이 서버와 Leaflet CDN(파일 해시를 `integrity`로 확인)만, 이미지·API 요청은 지금 쓰는 타일·위키 서비스만 허용한다. **새 외부 서비스를 붙이면 `CSP`에도 그 주소를 추가해야 한다.** 빠뜨리면 브라우저가 조용히 막는다(위키미디어 사진이 `upload.`이 아니라 `thumb.wikimedia.org`에서 내려오는 것도 실제 서비스로 열어 보고서야 알았다). 브라우저 테스트는 CSP 위반이 하나라도 콘솔에 찍히면 실패한다.
+
 ## 데이터와 가공 기준
 
 - 출처: Pleiades gazetteer, [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/)
@@ -198,6 +211,7 @@ CARTO 지도는 키 없이 쓰면 타일에 "API key required" 워터마크가 �
   - Pleiades에서 위치 정밀도가 `precise`인 장소
   - 존속 기간이 기원전 30년 이후 ~ 서기 400년 이전과 겹치는 곳 (원형극장·수도교·목욕탕·빌라는 연대가 없어도 포함)
   - `scripts/build_sites.py`의 대략적인 유럽 경계 다각형 안 (북아프리카·아나톨리아 제외, 에게해 동쪽 일부 섬도 빠짐)
+- Wikidata 연결이 있는 4,099곳은 빌드할 때 Wikidata에서 두 값만 받아 둔다: `ko_label`(한국어 라벨, 한글이 들어 있는 것만. 425곳)과 `links`(위키백과 언어판 수). 한국어 라벨은 지금의 지명인 경우가 많다(Col. Barcino → 바르셀로나)
 - Wikidata 연결은 Pleiades가 관리하는 연결표(`data/indexes/wikidata.json`)에서 가져와 `wd` 속성에 넣는다. 사진·설명 자체는 저장하지 않고, 팝업을 열 때 브라우저가 Wikidata·위키백과·위키미디어 공용 API에서 바로 불러온다 (키 필요 없음). 사진마다 저작자·라이선스를 함께 표시한다
 - "유적이 남아 있음"은 Pleiades의 `archaeological_remains`가 substantive·traces·restored인 곳. 개방 중·입장 가능·방문 추천이라는 뜻은 아니다
 - 사진은 그 유적의 Wikidata 항목에 등록된 대표 사진(P18)만 쓴다. 위키백과 문서 썸네일처럼 다른 대상일 수 있는 사진은 쓰지 않는다
@@ -205,7 +219,8 @@ CARTO 지도는 키 없이 쓰면 타일에 "API key required" 워터마크가 �
 
 ## 다음 단계
 
-- [ ] 즐겨찾기, 공유 URL(선택 유적·지도 위치), 방문 기록
+- [ ] 즐겨찾기, 방문 기록
+- [ ] 한국어 이름 넓히기 (Wikidata 한국어 라벨은 425곳뿐. 위키백과 한국어 문서 제목, 손으로 확인한 별칭 추가)
 - [ ] 행군 반경 직접 선택 (지금은 20 로마마일 고정)
 - [ ] 시대(연대) 필터와 시간 흐름 보기 (존속 기간 막대는 상세에 있음)
 - [ ] 밀도 표현 다듬기 (예: Tabula Peutingeriana에서 영감을 받은 표현)

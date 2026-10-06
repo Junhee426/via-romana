@@ -4,6 +4,8 @@
 Render:     render.yaml의 startCommand 참고
 """
 
+import gzip
+import hashlib
 import json
 import logging
 import math
@@ -12,7 +14,7 @@ import unicodedata
 from pathlib import Path
 from xml.sax.saxutils import escape
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
@@ -44,12 +46,35 @@ app = FastAPI(title="via-romana", version="0.1.0")
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 
+# 지도 페이지가 불러와도 되는 곳만 적어 둔다 (스크립트는 이 서버와 Leaflet CDN뿐).
+# 새 외부 서비스를 붙이면 여기에도 추가해야 한다. style의 'unsafe-inline'은 분류 색(--c) 인라인 스타일 때문
+CSP = "; ".join([
+    "default-src 'self'",
+    "script-src 'self' https://cdnjs.cloudflare.com",
+    "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://fonts.googleapis.com",
+    "font-src https://fonts.gstatic.com",
+    # 위키미디어 공용 사진은 upload.·thumb. 등 여러 호스트에서 내려온다
+    "img-src 'self' data: blob: https://*.basemaps.cartocdn.com https://server.arcgisonline.com"
+    " https://tile.googleapis.com https://*.wikimedia.org https://cdnjs.cloudflare.com",
+    "connect-src 'self' https://www.wikidata.org https://commons.wikimedia.org"
+    " https://*.wikipedia.org https://tile.googleapis.com",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'self'",
+])
+
+
 @app.middleware("http")
 async def revalidate_static(request, call_next):
     """지도 파일(html·js·css)은 매번 새 버전인지 확인하게 해서 배포 직후 옛 화면이 남지 않게 한다."""
     response = await call_next(request)
-    if not request.url.path.startswith("/api/"):
+    path = request.url.path
+    if not path.startswith("/api/"):
         response.headers.setdefault("Cache-Control", "no-cache")
+    # 지도 페이지에만 붙인다 (/docs의 Swagger 화면은 다른 CDN과 인라인 스크립트를 쓴다)
+    if path == "/" or path.endswith(".html"):
+        response.headers.setdefault("Content-Security-Policy", CSP)
     return response
 
 
@@ -96,21 +121,52 @@ SITES_BY_ID = {f["properties"]["id"]: f for f in SITES}
 META = load_meta()
 ALIASES, REGIONS = load_curated(SITES_BY_ID)
 
-# 검색 대상: 원래 이름 + Pleiades 설명 + 확인된 한국어 별칭 + Pleiades ID
+
+def korean_names(sites, aliases):
+    """유적 ID → 한국어 이름 목록. 손으로 확인한 별칭이 먼저, 그다음 Wikidata 한국어 라벨(겹치면 한 번만)."""
+    names = {}
+    for f in sites:
+        p = f["properties"]
+        found = list(aliases.get(p["id"], []))
+        label = p.get("ko_label")
+        if label and normalize(label) not in {normalize(n) for n in found}:
+            found.append(label)
+        if found:
+            names[p["id"]] = found
+    return names
+
+
+KO_NAMES = korean_names(SITES, ALIASES)
+
+# 검색 대상: 원래 이름 + Pleiades 설명 + 한국어 이름(별칭·Wikidata 라벨) + Pleiades ID
 SEARCH_TEXT = {
     f["properties"]["id"]: normalize(" ".join([
-        f["properties"]["name"], f["properties"].get("desc") or "", *ALIASES.get(f["properties"]["id"], []),
+        f["properties"]["name"], f["properties"].get("desc") or "", *KO_NAMES.get(f["properties"]["id"], []),
         f["properties"]["id"],
     ]))
     for f in SITES
 }
 
-# 응답용: 별칭이 있는 유적만 ko 속성을 붙인 사본으로 바꾼다 (원본 데이터는 그대로)
-SITES_OUT = [
-    {**f, "properties": {**f["properties"], "ko": ALIASES[f["properties"]["id"]]}}
-    if f["properties"]["id"] in ALIASES else f
-    for f in SITES
-]
+
+def with_ko(f):
+    """응답용 사본: 한국어 이름을 ko 하나로 모은다 (ko_label은 ko에 들어 있으므로 뺀다). 원본 데이터는 그대로."""
+    names = KO_NAMES.get(f["properties"]["id"])
+    if not names:
+        return f
+    props = {k: v for k, v in f["properties"].items() if k != "ko_label"}
+    return {**f, "properties": {**props, "ko": names}}
+
+
+SITES_OUT = [with_ko(f) for f in SITES]
+SITES_OUT_BY_ID = {f["properties"]["id"]: f for f in SITES_OUT}
+
+# 지도는 항상 필터 없이 전체를 받는다. 요청마다 1만 곳을 직렬화·압축하지 않도록 한 번만 만들어 두고,
+# 내용 해시를 ETag로 써서 다시 방문했을 때는 304(본문 없음)로 끝낸다
+ALL_SITES_JSON = json.dumps(
+    {"type": "FeatureCollection", "features": SITES_OUT}, ensure_ascii=False, separators=(",", ":"),
+).encode("utf-8")
+ALL_SITES_GZIP = gzip.compress(ALL_SITES_JSON, 9, mtime=0)
+ALL_SITES_ETAG = hashlib.sha256(ALL_SITES_JSON).hexdigest()[:20]
 
 _lons = [f["geometry"]["coordinates"][0] for f in SITES]
 _lats = [f["geometry"]["coordinates"][1] for f in SITES]
@@ -161,6 +217,8 @@ def parse_bbox(bbox: str | None):
         west, south, east, north = (float(v) for v in bbox.split(","))
     except ValueError:
         raise HTTPException(400, "bbox 형식은 서,남,동,북 입니다")
+    if not all(math.isfinite(v) for v in (west, south, east, north)) or west > east or south > north:
+        raise HTTPException(400, "bbox는 서 ≤ 동, 남 ≤ 북인 숫자여야 합니다")
     return west, south, east, north
 
 
@@ -216,14 +274,31 @@ def meta():
     }
 
 
+def all_sites_response(request: Request):
+    """미리 만들어 둔 전체 목록. ETag가 같으면 304, gzip을 받는 클라이언트에는 미리 압축한 본문."""
+    accepts_gzip = "gzip" in request.headers.get("accept-encoding", "")
+    # 압축본과 원본은 바이트가 다르므로 ETag도 구분한다
+    etag = f'"{ALL_SITES_ETAG}{"-gz" if accepts_gzip else ""}"'
+    headers = {"ETag": etag, "Cache-Control": "no-cache", "Vary": "Accept-Encoding"}
+    candidates = {t.strip().removeprefix("W/") for t in request.headers.get("if-none-match", "").split(",")}
+    if etag in candidates:
+        return Response(status_code=304, headers=headers)
+    if accepts_gzip:
+        return Response(ALL_SITES_GZIP, media_type="application/json", headers={**headers, "Content-Encoding": "gzip"})
+    return Response(ALL_SITES_JSON, media_type="application/json", headers=headers)
+
+
 @app.get("/api/sites")
 def sites(
+    request: Request,
     cat: str | None = Query(None, description="분류 키, 쉼표로 여러 개 (예: arena,water)"),
     visible: bool = Query(False, description="유적이 남아 있는 곳만"),
     bbox: str | None = Query(None, description="서,남,동,북 (경도·위도)"),
     q: str | None = Query(None, description="검색어: 이름·설명·한국어 별칭·Pleiades ID에 모든 단어가 들어 있는 유적"),
 ):
-    """유적 목록을 GeoJSON FeatureCollection으로 돌려준다. 확인된 한국어 별칭이 있으면 ko 속성."""
+    """유적 목록을 GeoJSON FeatureCollection으로 돌려준다. 한국어 이름(별칭·Wikidata 라벨)이 있으면 ko 속성."""
+    if cat is None and not visible and not bbox and not (q or "").strip():
+        return all_sites_response(request)
     cats = parse_cats(cat)
     box = parse_bbox(bbox)
     terms = parse_q(q)
@@ -236,7 +311,7 @@ def sites(
 
 @app.get("/api/sites/{site_id}")
 def site(site_id: str):
-    f = SITES_BY_ID.get(site_id)
+    f = SITES_OUT_BY_ID.get(site_id)
     if not f:
         raise HTTPException(404, "해당 유적이 없습니다")
     return f
@@ -261,7 +336,7 @@ def near(
         "sites": [
             {**f["properties"], "coordinates": f["geometry"]["coordinates"],
              "distance_km": round(d, 2),
-             **({"ko": ALIASES[f["properties"]["id"]]} if f["properties"]["id"] in ALIASES else {})}
+             **({"ko": KO_NAMES[f["properties"]["id"]]} if f["properties"]["id"] in KO_NAMES else {})}
             for d, f in found[:limit]
         ],
     }

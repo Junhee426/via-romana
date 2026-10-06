@@ -9,7 +9,8 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600&family=IBM+Plex+Sans+KR:wght@400;500;600&display=swap">
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css"
+        integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body data-phase="loading">
@@ -97,9 +98,9 @@
             <label class="switch">
               <input type="checkbox" id="visible-only" data-needs-data disabled>
               <span class="switch-track" aria-hidden="true"></span>
-              <span>유적이 남아 있는 곳만</span>
+              <span>남아 있다고 기록된 곳만 <span class="muted-inline" id="visible-count"></span></span>
             </label>
-            <p class="hint">진한 점은 유적이 지금도 남아 있는 곳이에요. 남아 있다는 것은 발굴·보존 상태이고, 개방이나 입장 가능 여부와는 달라요.</p>
+            <p class="hint">진한 점은 Pleiades에 유적이 남아 있다고 기록된 곳이에요. 콜로세움처럼 기록이 비어 있는 유명 유적도 많아서, 이 필터를 켜면 그런 곳은 빠져요. 남아 있다는 것은 발굴·보존 상태이고, 개방이나 입장 가능 여부와는 달라요.</p>
           </div>
         </details>
 
@@ -155,7 +156,8 @@
 
   <div class="sr-only" id="live" aria-live="polite"></div>
 
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"
+          integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
   <script src="/js/icons.js"></script>
   <script src="/js/canvas-layer.js"></script>
   <script src="/app.js"></script>

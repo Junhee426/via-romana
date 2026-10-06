@@ -3,6 +3,7 @@
 사용법:
     python scripts/build_sites.py            # 원본이 없으면 내려받고 가공
     python scripts/build_sites.py --refresh  # 원본을 새로 내려받고 가공
+    python scripts/build_sites.py --wikidata-only  # 유적 목록은 그대로 두고 Wikidata 정보만 새로 받음
 
 결과:
     data/processed/sites.geojson  (지도와 API가 읽는 파일, git에 커밋)
@@ -16,6 +17,9 @@ import csv
 import json
 import re
 import sys
+import time
+import urllib.error
+import urllib.parse
 import urllib.request
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
@@ -40,6 +44,17 @@ LOCATION_FILES = PLEIADES_FILES[2:]
 
 # Pleiades ↔ Wikidata 연결표. 유적 사진·설명은 지도에서 이 ID로 Wikidata·위키백과를 찾는다
 WIKIDATA_INDEX = "https://raw.githubusercontent.com/isawnyu/pleiades.datasets/main/data/indexes/wikidata.json"
+
+# Wikidata에서 유적마다 한국어 라벨과 위키백과 언어판 수를 받아 둔다 (키 필요 없음).
+#   ko_label: 한국어 검색·표시용.  links: 얼마나 널리 알려진 곳인지 (지도에서 겹칠 때 우선순위)
+WIKIDATA_API = "https://www.wikidata.org/w/api.php"
+WIKIDATA_CACHE = ROOT / "data" / "raw" / "wikidata_details.json"
+WIKIDATA_BATCH = 50   # wbgetentities가 한 번에 받는 최대 개수
+USER_AGENT = "via-romana-build/0.1 (https://github.com/junhee426/via-romana)"
+# 사이트링크 중 위키백과가 아닌 것 (이름이 'wiki'로 끝나지만 백과사전이 아님)
+NOT_WIKIPEDIA = {"commonswiki", "wikidatawiki", "specieswiki", "metawiki",
+                 "mediawikiwiki", "sourceswiki", "wikimaniawiki", "outreachwiki"}
+HANGUL = re.compile(r"[가-힣]")
 
 # 로마 시대로 볼 기간: 위치의 존속 기간이 이 구간과 겹치면 포함
 # Pleiades 기준 'roman'은 기원전 30년~서기 300년, 'late-antique'는 300~640년
@@ -133,6 +148,71 @@ def wikidata_ids():
     }
 
 
+def fetch_wikidata(qids):
+    """QID 묶음 하나의 { QID: { ko, links } }. 없는 항목은 결과에서 빠진다."""
+    url = WIKIDATA_API + "?" + urllib.parse.urlencode({
+        "action": "wbgetentities", "format": "json", "ids": "|".join(qids),
+        "props": "labels|sitelinks", "languages": "ko",
+    })
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    for attempt in range(4):
+        try:
+            with urllib.request.urlopen(req, timeout=60) as res:
+                data = json.load(res)
+            break
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+            if attempt == 3:
+                raise
+            time.sleep(2 ** attempt)
+    found = {}
+    for key, entity in data.get("entities", {}).items():
+        if "missing" in entity:
+            continue
+        # 합쳐진 항목은 새 QID로 돌아온다. 우리가 물은 QID로 되돌려 적는다
+        qid = entity.get("redirects", {}).get("from", key)
+        label = entity.get("labels", {}).get("ko", {}).get("value", "").strip()
+        links = sum(1 for site in entity.get("sitelinks", {})
+                    if site.endswith("wiki") and site not in NOT_WIKIPEDIA)
+        # 한국어 라벨 칸에 로마자 표기만 들어 있는 경우는 쓰지 않는다 (이미 name으로 찾을 수 있음)
+        found[qid] = {"ko": label if HANGUL.search(label) else None, "links": links}
+    return found
+
+
+def wikidata_details(qids, refresh=False):
+    """QID → { ko: 한국어 라벨 또는 None, links: 위키백과 언어판 수 }. data/raw/에 캐시한다."""
+    cache = {}
+    if WIKIDATA_CACHE.exists() and not refresh:
+        cache = json.loads(WIKIDATA_CACHE.read_text(encoding="utf-8"))
+    todo = sorted(set(qids) - cache.keys(), key=lambda q: int(q[1:]))
+    if todo:
+        print(f"  Wikidata에서 받는 중: {len(todo):,}개 항목")
+    for i in range(0, len(todo), WIKIDATA_BATCH):
+        batch = todo[i:i + WIKIDATA_BATCH]
+        found = fetch_wikidata(batch)
+        for q in batch:
+            cache[q] = found.get(q, {"ko": None, "links": 0})
+        time.sleep(0.2)
+    if todo:
+        WIKIDATA_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        WIKIDATA_CACHE.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
+    return cache
+
+
+def add_wikidata(features, refresh=False):
+    """wd가 있는 유적에 links(항상)와 ko_label(한국어 라벨이 있을 때만)을 붙인다."""
+    details = wikidata_details([f["properties"]["wd"] for f in features if f["properties"]["wd"]], refresh)
+    for f in features:
+        props = f["properties"]
+        props.pop("ko_label", None)
+        props.pop("links", None)
+        info = details.get(props["wd"]) if props["wd"] else None
+        if not info:
+            continue
+        props["links"] = info["links"]
+        if info["ko"]:
+            props["ko_label"] = info["ko"]
+
+
 def read_csv(name):
     csv.field_size_limit(10**9)
     with open(RAW_DIR / name, encoding="utf-8-sig", newline="") as f:
@@ -219,6 +299,11 @@ def build():
         })
 
     features.sort(key=lambda f: f["properties"]["id"])
+    print("제외:", dict(skipped))
+    return features
+
+
+def write(features, built_at):
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     with open(OUT_DIR / "sites.geojson", "w", encoding="utf-8") as f:
         json.dump({"type": "FeatureCollection", "features": features},
@@ -226,12 +311,15 @@ def build():
 
     counts = Counter(f["properties"]["cat"] for f in features)
     with_wd = sum(1 for f in features if f["properties"]["wd"])
+    with_ko = sum(1 for f in features if f["properties"].get("ko_label"))
     meta = {
-        "built_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "built_at": built_at,
+        "wikidata_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "total": len(features),
         "by_category": {c["key"]: counts.get(c["key"], 0) for c in CATEGORIES},
         "period": [ROMAN_START, ROMAN_END],
         "with_wikidata": with_wd,
+        "with_ko_label": with_ko,
         "sources": [{
             "name": "Pleiades",
             "url": "https://pleiades.stoa.org",
@@ -248,18 +336,28 @@ def build():
     print(f"\n유적 {len(features):,}곳 저장 → data/processed/sites.geojson")
     for c in CATEGORIES:
         print(f"  {c['label']:<12} {counts.get(c['key'], 0):>6,}")
-    print(f"Wikidata 연결: {with_wd:,}곳")
-    print("제외:", dict(skipped))
+    print(f"Wikidata 연결: {with_wd:,}곳 (한국어 라벨 {with_ko:,}곳)")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--refresh", action="store_true", help="원본 다시 내려받기")
+    parser.add_argument("--wikidata-only", action="store_true",
+                        help="지금의 sites.geojson은 그대로 두고 Wikidata 정보(한국어 라벨·위키백과 수)만 새로 받기")
     args = parser.parse_args()
-    print("Pleiades 원본 확인")
-    download(refresh=args.refresh)
-    print("가공 중")
-    build()
+    if args.wikidata_only:
+        features = json.loads((OUT_DIR / "sites.geojson").read_text(encoding="utf-8"))["features"]
+        built_at = json.loads((OUT_DIR / "meta.json").read_text(encoding="utf-8"))["built_at"]
+        print("Wikidata 정보 받는 중")
+        add_wikidata(features, refresh=True)
+    else:
+        print("Pleiades 원본 확인")
+        download(refresh=args.refresh)
+        print("가공 중")
+        features = build()
+        built_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        add_wikidata(features, refresh=args.refresh)
+    write(features, built_at)
 
 
 if __name__ == "__main__":

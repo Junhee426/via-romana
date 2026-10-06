@@ -10,7 +10,7 @@
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { mkdirSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { iconReport, MAX_IOU } from "./icons.mjs";
@@ -27,6 +27,7 @@ const LEAFLET_CSS = readFileSync(require.resolve("leaflet/dist/leaflet.css"));
 // 지도 타일 대신 쓰는 옅은 양피지 격자 (캡처가 실제 배경 톤과 비슷하게 보이도록)
 const TILE = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256"><rect width="256" height="256" fill="#f3f1ec"/><path d="M0 128h256M128 0v256" stroke="#e2ded5"/></svg>');
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkaPhfDwAE/wH+5dXYhwAAAABJRU5ErkJggg==", "base64");
+const META = JSON.parse(readFileSync(join(ROOT, "data", "processed", "meta.json"), "utf8"));
 const PORT = 8790 + Math.floor(Math.random() * 100);
 const BASE = `http://127.0.0.1:${PORT}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -40,7 +41,9 @@ const VIEWPORTS = {
 
 // ── 서버 ────────────────────────────────────
 async function startServer() {
-  const py = process.env.VIA_PYTHON || "python3";
+  // 경로로 준 VIA_PYTHON은 지금 폴더(tests/) 기준으로 푼다. 서버는 저장소 루트에서 띄우기 때문
+  const env = process.env.VIA_PYTHON;
+  const py = env ? (/[\\/]/.test(env) ? resolve(env) : env) : "python3";
   const proc = spawn(py, ["-m", "uvicorn", "app.main:app", "--port", String(PORT)], { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] });
   let log = "";
   proc.stdout.on("data", (d) => { log += d; });
@@ -80,7 +83,7 @@ function wikiHandler(opts) {
     if (u.host === "commons.wikimedia.org") {
       const file = u.searchParams.get("titles");
       return json(route, { query: { pages: { 1: { title: file, imageinfo: [{
-        thumburl: `https://upload.wikimedia.org/fixture/${encodeURIComponent(file)}.png`,
+        thumburl: `https://thumb.wikimedia.org/fixture/${encodeURIComponent(file)}.png`,   // 실제 썸네일 호스트
         descriptionurl: `https://commons.wikimedia.org/wiki/${encodeURIComponent(file)}`,
         extmetadata: { Artist: { value: '<a href="//commons.wikimedia.org/wiki/User:Tester">Tester</a>' }, LicenseShortName: { value: "CC BY-SA 4.0" } },
       }] } } } });
@@ -90,7 +93,7 @@ function wikiHandler(opts) {
       const title = decodeURIComponent(u.pathname.split("/").pop());
       return json(route, { title, extract: `요약: ${title}`, content_urls: { desktop: { page: `https://${u.host}/wiki/${title}` } } });
     }
-    if (u.host === "upload.wikimedia.org") {
+    if (u.host === "thumb.wikimedia.org" || u.host === "upload.wikimedia.org") {
       if (w.imageFail > 0) { w.imageFail--; return route.fulfill({ status: 404, body: "" }); }
       return route.fulfill({ contentType: "image/png", body: PNG });
     }
@@ -100,7 +103,17 @@ function wikiHandler(opts) {
 }
 
 // ── 페이지 ──────────────────────────────────
-async function openPage(browser, { viewport = "desktop", wiki = {}, reducedMotion = "no-preference", geolocation, permissions, beforeLoad, wait = true } = {}) {
+// Leaflet은 integrity + crossorigin으로 불러오므로, 가짜 응답도 실제 CDN과 같은 바이트에 CORS 헤더를 붙인다
+const leafletRoute = (r) => r.fulfill({
+  contentType: r.request().url().endsWith(".js") ? "text/javascript" : "text/css",
+  headers: { "access-control-allow-origin": "*" },
+  body: r.request().url().endsWith(".js") ? LEAFLET_JS : LEAFLET_CSS,
+});
+
+// 테스트 하나를 도는 동안 브라우저가 알린 Content-Security-Policy 위반 (있으면 그 테스트는 실패)
+let cspViolations = [];
+
+async function openPage(browser, { viewport = "desktop", wiki = {}, reducedMotion = "no-preference", geolocation, permissions, beforeLoad, wait = true, hash = "" } = {}) {
   const context = await browser.newContext({
     viewport: VIEWPORTS[viewport] || viewport,
     reducedMotion,
@@ -113,16 +126,15 @@ async function openPage(browser, { viewport = "desktop", wiki = {}, reducedMotio
   const page = await context.newPage();
   page.errors = [];
   page.on("pageerror", (e) => page.errors.push(e.message));
-  await page.route("https://cdnjs.cloudflare.com/**", (r) => r.request().url().endsWith(".js")
-    ? r.fulfill({ contentType: "text/javascript", body: LEAFLET_JS })
-    : r.fulfill({ contentType: "text/css", body: LEAFLET_CSS }));
+  page.on("console", (m) => { if (/Content Security Policy|integrity/i.test(m.text())) cspViolations.push(m.text()); });
+  await page.route("https://cdnjs.cloudflare.com/**", leafletRoute);
   await page.route(/fonts\.(googleapis|gstatic)\.com/, (r) => r.fulfill({ contentType: "text/css", body: "" }));
   await page.route(/cartocdn\.com|arcgisonline\.com|tile\.googleapis\.com/, (r) => r.fulfill({ contentType: "image/svg+xml", body: TILE }));
   const { w, handler } = wikiHandler(wiki);
   page.wiki = w;
   await page.route(/wikidata\.org|wikipedia\.org|wikimedia\.org/, handler);
   if (beforeLoad) await beforeLoad(page);
-  await page.goto(BASE + "/");
+  await page.goto(`${BASE}/${hash}`);
   if (wait) await waitReady(page);
   return page;
 }
@@ -180,7 +192,7 @@ const test = (name, fn) => tests.push({ name, fn });
 test("API: /healthz와 /api/meta 응답", async () => {
   const h = await (await fetch(`${BASE}/healthz`)).json();
   assert.equal(h.ok, true);
-  assert.equal(h.sites, 10580);
+  assert.equal(h.sites, META.total);
   const m = await (await fetch(`${BASE}/api/meta`)).json();
   assert.equal(m.day_march_km, 29.6);
   assert.equal(m.regions.length, 7);
@@ -486,7 +498,7 @@ test("다른 유적으로 옮긴 뒤 도착한 이전 유적의 사진·설명�
   await page.click("#detail-back");
   await page.click('#results .site-row[data-id="285857974"]');
   await page.waitForTimeout(300);
-  assert.equal(page.wiki.calls.filter((c) => !c.startsWith("upload")).length, page.wiki.calls.slice(0, before).filter((c) => !c.startsWith("upload")).length);
+  assert.equal(page.wiki.calls.filter((c) => !c.startsWith("thumb")).length, page.wiki.calls.slice(0, before).filter((c) => !c.startsWith("thumb")).length);
 });
 
 test("Wikidata가 없는 유적은 사진·설명이 없다고 알리고 Pleiades 설명을 보여 준다", async (browser) => {
@@ -556,7 +568,7 @@ test("KML: 서버 오류·네트워크 오류·404는 파일을 저장하지 않
   await page.click("#export-kml");
   await page.waitForFunction(() => /조건에 맞는 유적이 없어요/.test(document.getElementById("export-status").textContent));
   assert.equal(downloads, 0);
-  assert.ok(page.url().endsWith("/"), "지도 페이지에 그대로 있다");
+  assert.equal(new URL(page.url()).pathname, "/", "지도 페이지에 그대로 있다");
   mode = "slow";
   requests = 0;
   await page.click("#export-kml");
@@ -845,9 +857,7 @@ test("Google 저작권은 Google 타일을 볼 때만 붙고, 로마(CARTO) 배�
 test("고배율 기기에서도 지도 캔버스는 2배까지만 만든다", async (browser) => {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 3 });
   const page = await context.newPage();
-  await page.route("https://cdnjs.cloudflare.com/**", (r) => r.request().url().endsWith(".js")
-    ? r.fulfill({ contentType: "text/javascript", body: LEAFLET_JS })
-    : r.fulfill({ contentType: "text/css", body: LEAFLET_CSS }));
+  await page.route("https://cdnjs.cloudflare.com/**", leafletRoute);
   await page.route(/fonts\.|cartocdn|arcgisonline|wiki/, (r) => r.fulfill({ contentType: "image/png", body: PNG }));
   await page.goto(BASE + "/");
   await waitReady(page);
@@ -881,6 +891,139 @@ for (const [vp, size] of Object.entries(VIEWPORTS)) {
   });
 }
 
+test("공유 주소: 지도 위치와 열린 상세가 주소에 남고, 그 주소로 열면 같은 화면이 된다", async (browser) => {
+  const page = await openPage(browser, { permissions: ["clipboard-read", "clipboard-write"] });
+  assert.equal(new URL(page.url()).hash, "", "처음에는 주소를 바꾸지 않는다");
+  await setView(page, 41.8902, 12.4922, 13);
+  assert.match(new URL(page.url()).hash, /^#map=13\/41\.8902\/12\.4922$/);
+  await search(page, "콜로세움");
+  await page.click("#results .site-row >> nth=0");
+  await page.waitForSelector("#view-detail:not([hidden])");
+  await page.waitForFunction(() => location.hash.includes("site=285857974"));
+  await page.click("#d-share");
+  await page.waitForFunction(() => document.getElementById("d-share-status").textContent.includes("복사했어요"));
+  const copied = await page.evaluate(() => navigator.clipboard.readText());
+  assert.equal(copied, page.url());
+  assert.match(copied, /#map=\d+\/[\d.]+\/[\d.]+&site=285857974$/);
+  await page.click("#detail-back");
+  assert.doesNotMatch(new URL(page.url()).hash, /site=/, "목록으로 돌아가면 유적은 주소에서 빠진다");
+  assert.deepEqual(page.errors, []);
+
+  // 복사한 주소로 새로 열기: 같은 유적 상세, 주소에 적힌 줌 그대로
+  const linked = await openPage(browser, { hash: "#map=14/41.8902/12.4922&site=285857974" });
+  await linked.waitForSelector("#view-detail:not([hidden])");
+  assert.equal(await text(linked, "#detail-name"), "Amphitheatrum Flavium");
+  assert.equal(await dbg(linked, "(d) => d.map.getZoom()"), 14);
+  assert.equal(await dbg(linked, "(d) => d.state.selectedId"), "285857974");
+  assert.deepEqual(linked.errors, []);
+
+  // 유적만 적힌 주소: 그 유적으로 확대해서 연다
+  const siteOnly = await openPage(browser, { viewport: "mobile", hash: "#site=149496" });
+  await siteOnly.waitForSelector("#view-detail:not([hidden])");
+  assert.equal(await text(siteOnly, "#detail-name"), "Pont du Gard");
+  assert.equal(await siteOnly.getAttribute("#panel", "data-state"), "detail");
+  await siteOnly.waitForFunction(() => window.viaRomanaDebug.map.getZoom() >= 12);
+  assert.deepEqual(siteOnly.errors, []);
+
+  // 잘못된 주소는 무시하고 기본 화면으로
+  const bad = await openPage(browser, { hash: "#map=abc/999/1&site=nope" });
+  assert.equal(await dbg(bad, "(d) => d.map.getZoom()"), 5);
+  assert.equal(await bad.isVisible("#view-detail"), false);
+  assert.deepEqual(bad.errors, []);
+
+  // 같은 탭에서 주소만 바꿔도 따라간다
+  await bad.evaluate(() => { location.hash = "#map=12/43.9475/4.5350&site=149496"; });
+  await bad.waitForSelector("#view-detail:not([hidden])");
+  assert.equal(await text(bad, "#detail-name"), "Pont du Gard");
+  assert.equal(await dbg(bad, "(d) => d.map.getZoom()"), 12);
+});
+
+test("Wikidata 보강: 한국어 라벨로 검색되고, 널리 알려진 곳이 겹칠 때 먼저 그려진다", async (browser) => {
+  const page = await openPage(browser);
+  await openList(page);
+  await search(page, "바르셀로나");
+  const first = page.locator("#results .site-row").first();
+  assert.equal(await first.locator(".name").innerText(), "Col. Barcino");
+  assert.equal(await first.locator(".ko").innerText(), "바르셀로나");
+  // 콜로세움은 Pleiades에 남은 정도 기록이 없지만(unknown) 위키백과 언어판이 많아 가장 높은 단계
+  const prio = await dbg(page, `(d) => {
+    const all = d.state.sites;
+    const pick = (fn) => all.find(fn).prio;
+    return {
+      colosseum: d.state.byId.get("285857974").prio,
+      seenWd: pick((s) => ["substantive", "traces", "restored"].includes(s.remains) && s.wd && (s.links || 0) < 20),
+      seen: pick((s) => ["substantive", "traces", "restored"].includes(s.remains) && !s.wd),
+      wd: pick((s) => s.remains === "unknown" && s.wd && (s.links || 0) < 20),
+      none: pick((s) => s.remains === "unknown" && !s.wd),
+    };
+  }`);
+  assert.ok(prio.colosseum < 1 && prio.colosseum < prio.seenWd, JSON.stringify(prio));
+  assert.ok(prio.seenWd < prio.seen && prio.seen < prio.wd && prio.wd < prio.none, JSON.stringify(prio));
+  // 로마를 넓게 보는 줌에서도 콜로세움은 겹침에 밀리지 않고 그려진다 (누르면 선택된다)
+  await page.click("#search-clear");
+  await setView(page, 41.8902, 12.4922, 9);
+  const pt = await pointFor(page, 41.89025, 12.49235);
+  await page.mouse.click(pt.x, pt.y);
+  await page.waitForSelector("#view-detail:not([hidden])");
+  assert.equal(await text(page, "#detail-name"), "Amphitheatrum Flavium");
+  assert.deepEqual(page.errors, []);
+});
+
+test("남은 정도 필터는 기록 기준임을 건수와 함께 알리고, 이름 없는 곳은 '이름 없는 유적'으로 보인다", async (browser) => {
+  const page = await openPage(browser);
+  await openList(page);
+  await openFilters(page);
+  const label = await text(page, ".switch");
+  assert.match(label, /남아 있다고 기록된 곳만 \([\d,]+곳\)/);
+  const shown = Number(label.match(/\(([\d,]+)곳\)/)[1].replace(/,/g, ""));
+  await page.click(".switch");
+  await page.waitForTimeout(250);
+  assert.equal(await matchedCount(page), shown, "필터를 켠 건수가 라벨의 건수와 같다");
+  assert.match(await text(page, "#filter-summary"), /남아 있다고 기록된 곳만/);
+  await page.click(".switch");
+  await search(page, "untitled");
+  assert.equal(await page.locator("#results .site-row .name").first().innerText(), "이름 없는 유적");
+  await page.click("#results .site-row >> nth=0");
+  await page.waitForSelector("#view-detail:not([hidden])");
+  assert.equal(await text(page, "#detail-name"), "이름 없는 유적");
+  assert.deepEqual(page.errors, []);
+});
+
+test("보안: 지도 페이지에 CSP가 붙고, 사진 저작자 HTML은 실행·요청 없이 글자만 쓴다", async (browser) => {
+  const res = await fetch(`${BASE}/`);
+  const csp = res.headers.get("content-security-policy") || "";
+  assert.match(csp, /default-src 'self'/);
+  assert.match(csp, /script-src 'self' https:\/\/cdnjs\.cloudflare\.com;/);
+  const html = await res.text();
+  assert.equal((html.match(/integrity="sha384-/g) || []).length, 2, "Leaflet css·js에 integrity");
+  // 저작자 칸에 이미지·핸들러가 섞여 와도 요청하거나 실행하지 않는다
+  const page = await openPage(browser);
+  const stray = [];
+  await page.route("https://commons.wikimedia.org/**", (route) => route.fulfill({
+    contentType: "application/json",
+    headers: { "access-control-allow-origin": "*" },
+    body: JSON.stringify({ query: { pages: { 1: { imageinfo: [{
+      thumburl: "https://thumb.wikimedia.org/fixture/x.png",
+      descriptionurl: "https://commons.wikimedia.org/wiki/File:x.png",
+      extmetadata: { Artist: { value: '<img src="https://upload.wikimedia.org/stray.png" onerror="window.__ran = 1">Tester' }, LicenseShortName: { value: "CC0" } },
+    }] } } } }),
+  }));
+  page.on("request", (r) => { if (r.url().includes("stray.png")) stray.push(r.url()); });
+  await openList(page);
+  await search(page, "콜로세움");
+  await page.click("#results .site-row >> nth=0");
+  await page.waitForSelector("#d-photo img");
+  assert.equal(await text(page, "#d-photo .credit"), "사진: Tester, CC0");
+  await page.waitForTimeout(300);
+  assert.deepEqual(stray, []);
+  assert.equal(await page.evaluate(() => window.__ran), undefined);
+  // 배경을 바꾸고 KML까지 받아도 CSP에 걸리는 것이 없다 (위반은 실행기가 테스트마다 확인)
+  await page.click('.basemap [data-base="sat"]');
+  await page.click('.basemap [data-base="map"]');
+  await page.waitForTimeout(300);
+  assert.deepEqual(page.errors, []);
+});
+
 test("성능: 필터 변경·줌 변경 처리 시간 측정", async (browser) => {
   const page = await openPage(browser);
   const t = await page.evaluate(async () => {
@@ -904,8 +1047,10 @@ let failed = 0;
 for (const t of tests) {
   if (only && !t.name.includes(only)) continue;
   const t0 = Date.now();
+  cspViolations = [];
   try {
     await t.fn(browser);
+    assert.deepEqual(cspViolations, [], "Content-Security-Policy 위반");
     console.log(`✓ ${t.name} (${Date.now() - t0}ms)`);
   } catch (err) {
     failed++;

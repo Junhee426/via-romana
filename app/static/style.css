@@ -577,6 +577,7 @@ button, input { font: inherit; color: inherit; }
 .d-about-text { margin: 0 0 4px; font-size: 14px; line-height: 1.65; }
 .d-source, .d-links { margin: 0 0 12px; font-size: 13px; }
 .d-source a, .d-links a { color: var(--caeruleum); }
+.d-share { margin: -8px 0 12px; font-size: 13px; }
 .d-desc { margin: 0 0 10px; font-size: 13px; color: var(--tufa); line-height: 1.55; }
 .d-desc-label { font-weight: 600; }
 .muted { margin: 0 0 8px; font-size: 13px; color: var(--tufa); }
